@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  birdapp:
+    build: .
+    container_name: birdapp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - CAMERA_URL=http://192.168.86.32/image.jpg
