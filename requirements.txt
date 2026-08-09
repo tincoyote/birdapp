@@ -3,4 +3,4 @@ uvicorn==0.28.0
 Pillow==10.2.0
 python-multipart==0.0.9
 tflite-runtime
-numpy
+numpy<2
