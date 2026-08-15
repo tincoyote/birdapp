@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
+from routes.nav import NAV_HTML
 
 router = APIRouter()
 
@@ -40,6 +41,7 @@ async def gallery_page():
     <body>
         <div class="container">
             <h1>Gallery - Approved Sightings</h1>
+            __NAV__
             
             <div class="filters">
                 <div class="filter-group"><label>Date From</label><input type="date" id="dateFrom"></div>
@@ -143,4 +145,5 @@ async def gallery_page():
     </body>
     </html>
     """
+    html = html.replace("__NAV__", NAV_HTML)
     return HTMLResponse(html)

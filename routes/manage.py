@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
+from routes.nav import NAV_HTML
 
 router = APIRouter()
 
@@ -43,11 +44,17 @@ async def manage_page():
             .lightbox img { max-width: 90%; max-height: 90%; border-radius: 4px; }
             .lightbox-close { position: absolute; top: 20px; right: 30px; color: white; font-size: 28px; cursor: pointer; user-select: none; }
             .info { padding: 12px; background: #e7f3ff; border-left: 4px solid #007bff; margin-bottom: 15px; font-size: 13px; display: none; }
+            .busy-overlay { display: none; position: fixed; z-index: 1001; left: 0; top: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.85); align-items: center; justify-content: center; flex-direction: column; }
+            .busy-overlay.active { display: flex; }
+            .spinner { width: 44px; height: 44px; border: 5px solid #dee2e6; border-top-color: #007bff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px; }
+            @keyframes spin { to { transform: rotate(360deg); } }
+            .busy-msg { font-weight: 600; color: #333; }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>Manage - Review Sightings</h1>
+            __NAV__
             <div class="info" id="info"></div>
             
             <div class="filters">
@@ -100,6 +107,11 @@ async def manage_page():
         <div class="lightbox" id="lightbox">
             <span class="lightbox-close" onclick="closeLightbox()">&times;</span>
             <img id="lightboxImg" onclick="event.stopPropagation()">
+        </div>
+        
+        <div class="busy-overlay" id="busyOverlay">
+            <div class="spinner"></div>
+            <div class="busy-msg" id="busyMsg">Working...</div>
         </div>
         
         <script>
@@ -208,9 +220,12 @@ async def manage_page():
             async function acceptSelected() {
                 if (!confirm(`Accept ${selectedIds.size} to gallery?`)) return;
                 const ids = Array.from(selectedIds);
-                for (const id of ids) {
-                    await fetch(`/api/sightings/${id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'approved'}) });
+                setBusy(true, `Accepting 0 of ${ids.length}...`);
+                for (let i = 0; i < ids.length; i++) {
+                    await fetch(`/api/sightings/${ids[i]}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'approved'}) });
+                    setBusy(true, `Accepting ${i + 1} of ${ids.length}...`);
                 }
+                setBusy(false);
                 showInfo(`Accepted ${ids.length} to gallery`);
                 selectedIds.clear();
                 await applyFilters();
@@ -219,9 +234,12 @@ async def manage_page():
             async function resendSelected() {
                 if (!confirm(`Resend ${selectedIds.size} to classifier?`)) return;
                 const ids = Array.from(selectedIds);
-                for (const id of ids) {
-                    await fetch(`/api/sightings/${id}/resend-classifier`, { method: 'POST' });
+                setBusy(true, `Resending 0 of ${ids.length}...`);
+                for (let i = 0; i < ids.length; i++) {
+                    await fetch(`/api/sightings/${ids[i]}/resend-classifier`, { method: 'POST' });
+                    setBusy(true, `Resending ${i + 1} of ${ids.length}...`);
                 }
+                setBusy(false);
                 showInfo(`Sent ${ids.length} to classifier`);
                 selectedIds.clear();
                 await applyFilters();
@@ -230,9 +248,12 @@ async def manage_page():
             async function deleteSelected() {
                 if (!confirm(`Reject ${selectedIds.size} to trash?`)) return;
                 const ids = Array.from(selectedIds);
-                for (const id of ids) {
-                    await fetch(`/api/sightings/${id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) });
+                setBusy(true, `Rejecting 0 of ${ids.length}...`);
+                for (let i = 0; i < ids.length; i++) {
+                    await fetch(`/api/sightings/${ids[i]}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) });
+                    setBusy(true, `Rejecting ${i + 1} of ${ids.length}...`);
                 }
+                setBusy(false);
                 showInfo(`Rejected ${ids.length} to trash`);
                 selectedIds.clear();
                 await applyFilters();
@@ -245,6 +266,17 @@ async def manage_page():
                 setTimeout(() => info.style.display = 'none', 4000);
             }
             
+            function setBusy(isBusy, msg) {
+                const overlay = document.getElementById('busyOverlay');
+                if (isBusy) {
+                    document.getElementById('busyMsg').textContent = msg || 'Working...';
+                    overlay.classList.add('active');
+                    ['btnAccept', 'btnResend', 'btnDel'].forEach(id => document.getElementById(id).disabled = true);
+                } else {
+                    overlay.classList.remove('active');
+                }
+            }
+            
             document.getElementById('confidence').addEventListener('input', e => document.getElementById('confLabel').textContent = e.target.value + '%');
             loadSpecies();
             autoPopulateDates();
@@ -252,4 +284,5 @@ async def manage_page():
     </body>
     </html>
     """
+    html = html.replace("__NAV__", NAV_HTML)
     return HTMLResponse(html)

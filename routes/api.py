@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from datetime import datetime
 from fastapi import APIRouter
 
 router = APIRouter()
@@ -7,13 +8,15 @@ router = APIRouter()
 
 @router.patch("/api/sightings/{sighting_id}/review-status")
 async def update_review_status(sighting_id: int, body: dict):
-    """Update review_status: 'pending_review', 'approved', or 'rejected'."""
+    """Update review_status: 'pending_review', 'approved', or 'rejected'.
+    Also stamps review_updated_at so trash/gallery can sort by 'most
+    recently changed' - critical for finding a just-made mistake fast."""
     from main import DB_PATH
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE sightings SET review_status = ? WHERE id = ?",
-        (body.get("review_status"), sighting_id)
+        "UPDATE sightings SET review_status = ?, review_updated_at = ? WHERE id = ?",
+        (body.get("review_status"), datetime.now().isoformat(), sighting_id)
     )
     conn.commit()
     conn.close()

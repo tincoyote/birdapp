@@ -10,6 +10,7 @@ from migration import migrate_v1_to_v2
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import tflite_runtime.interpreter as tflite
+from routes.nav import NAV_HTML
 
 app = FastAPI()
 
@@ -218,6 +219,7 @@ async def dashboard():
         </head>
         <body>
             <h1>🐦 Birdbath Visitor Dashboard</h1>
+            __NAV__
             <div class="grid">
     """
     for row in rows:
@@ -237,6 +239,7 @@ async def dashboard():
         </body>
     </html>
     """
+    html = html.replace("__NAV__", NAV_HTML)
     return html
 
 
@@ -273,6 +276,7 @@ async def list_sightings(
     inbox_status: str = Query(None),
     review_status: str = Query(None),
     is_trashed: bool = Query(False),
+    sort_by: str = Query("timestamp"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
 ):
@@ -312,10 +316,14 @@ async def list_sightings(
     cursor.execute(f"SELECT COUNT(*) FROM sightings WHERE {where_clause}", params)
     total = cursor.fetchone()[0]
 
+    # Whitelist sort_by against actual column names - it gets string-interpolated
+    # into the query below, so this isn't optional even though it's a GET param.
+    sort_column = "review_updated_at" if sort_by == "review_updated_at" else "timestamp"
+
     offset = (page - 1) * limit
     cursor.execute(
         f"""SELECT * FROM sightings WHERE {where_clause}
-           ORDER BY is_favorite DESC, timestamp DESC
+           ORDER BY is_favorite DESC, {sort_column} DESC
            LIMIT ? OFFSET ?""",
         params + [limit, offset]
     )

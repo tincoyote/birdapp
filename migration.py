@@ -24,6 +24,16 @@ def migrate_v1_to_v2(db_path):
         cursor.execute("ALTER TABLE sightings ADD COLUMN classifier_agreement TEXT DEFAULT 'pending'")
     if "review_status" not in existing_cols:
         cursor.execute("ALTER TABLE sightings ADD COLUMN review_status TEXT DEFAULT 'pending_review'")
+    if "review_updated_at" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN review_updated_at TEXT")
+
+    # Backfill review_updated_at so trash/gallery sort-by-recent-change has
+    # something to work with for pre-existing rows, instead of NULLs sorting
+    # unpredictably. Falls back to the original sighting timestamp.
+    cursor.execute("""
+        UPDATE sightings SET review_updated_at = timestamp
+        WHERE review_updated_at IS NULL
+    """)
 
     # Backfill: rows that predate this migration already have an AIY result
     # and no iNat result (iNat isn't wired in yet). That's the 'one_classifier'
