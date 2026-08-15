@@ -22,6 +22,8 @@ def migrate_v1_to_v2(db_path):
         cursor.execute("ALTER TABLE sightings ADD COLUMN inbox_status TEXT DEFAULT 'new'")
     if "classifier_agreement" not in existing_cols:
         cursor.execute("ALTER TABLE sightings ADD COLUMN classifier_agreement TEXT DEFAULT 'pending'")
+    if "review_status" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN review_status TEXT DEFAULT 'pending_review'")
 
     # Backfill: rows that predate this migration already have an AIY result
     # and no iNat result (iNat isn't wired in yet). That's the 'one_classifier'
