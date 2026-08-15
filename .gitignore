@@ -1,5 +1,9 @@
 # Runtime data - not source code
 data/
 
+# Python bytecode cache - regenerates automatically, not source
+__pycache__/
+*.pyc
+
 # Old exported image snapshots
 *.syno.tar

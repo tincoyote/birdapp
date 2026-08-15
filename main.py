@@ -4,8 +4,9 @@ import logging
 import csv
 import numpy as np
 from datetime import datetime
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse
+from migration import migrate_v1_to_v2
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import tflite_runtime.interpreter as tflite
@@ -45,6 +46,7 @@ def init_db():
 
 
 init_db()
+migrate_v1_to_v2(DB_PATH)
 
 # --- AIY (Google) bird classifier: loads once at startup, fails soft if files are missing ---
 aiy_interpreter = None
@@ -116,6 +118,24 @@ def classify_aiy(image_path):
         return None, None
 
 
+def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat):
+    """Determine classifier_agreement state from two classifiers' output.
+    Handles the case where one classifier hasn't run / isn't wired in yet -
+    that's 'one_classifier', distinct from 'pending' (both still running)."""
+    if species_aiy and not species_inat:
+        return 'one_classifier'
+    if species_inat and not species_aiy:
+        return 'one_classifier'
+    if not species_aiy and not species_inat:
+        return 'pending'
+
+    if species_aiy == species_inat:
+        if confidence_aiy >= 0.75 and confidence_inat >= 0.75:
+            return 'agreed'
+        return 'low_confidence'
+    return 'disagreed'
+
+
 def classify_and_save(image_path, sighting_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -127,10 +147,16 @@ def classify_and_save(image_path, sighting_id):
     # species_inat / confidence_inat intentionally left NULL for now.
     # iNaturalist small-model integration is a follow-up step, not yet wired in
     # (exact release asset filename wasn't confirmed yet).
+    species_inat, confidence_inat = None, None
+
+    agreement = compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat)
 
     cursor.execute(
-        "UPDATE sightings SET status = 'identified', species_aiy = ?, confidence_aiy = ? WHERE id = ?",
-        (species_aiy, confidence_aiy, sighting_id)
+        """UPDATE sightings
+           SET status = 'identified', species_aiy = ?, confidence_aiy = ?,
+               species_inat = ?, confidence_inat = ?, classifier_agreement = ?
+           WHERE id = ?""",
+        (species_aiy, confidence_aiy, species_inat, confidence_inat, agreement, sighting_id)
     )
     conn.commit()
     conn.close()
@@ -213,3 +239,181 @@ async def dashboard():
     </html>
     """
     return html
+
+
+def _build_filter_where(f: dict):
+    """Shared WHERE-clause builder for filter/delete/retag - keeps filter
+    semantics identical across all three endpoints."""
+    where_parts = ["is_trashed = 0"]
+    params = []
+    if f.get("species"):
+        where_parts.append("(species_confirmed = ? OR (species_confirmed IS NULL AND species_aiy = ?))")
+        params.extend([f["species"], f["species"]])
+    if f.get("confidence_min") is not None or f.get("confidence_max") is not None:
+        where_parts.append("confidence_aiy BETWEEN ? AND ?")
+        params.extend([f.get("confidence_min", 0.0), f.get("confidence_max", 1.0)])
+    if f.get("inbox_status"):
+        where_parts.append("inbox_status = ?")
+        params.append(f["inbox_status"])
+    if f.get("date_from"):
+        where_parts.append("timestamp >= ?")
+        params.append(f["date_from"] + "T00:00:00")
+    if f.get("date_to"):
+        where_parts.append("timestamp <= ?")
+        params.append(f["date_to"] + "T23:59:59")
+    return " AND ".join(where_parts), params
+
+
+@app.get("/api/sightings")
+async def list_sightings(
+    confidence_min: float = Query(0.0, ge=0, le=1),
+    confidence_max: float = Query(1.0, ge=0, le=1),
+    species: str = Query(None),
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    inbox_status: str = Query(None),
+    is_trashed: bool = Query(False),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    where_parts = ["is_trashed = ?"]
+    params = [1 if is_trashed else 0]
+    if species:
+        where_parts.append("(species_confirmed = ? OR (species_confirmed IS NULL AND species_aiy = ?))")
+        params.extend([species, species])
+    if confidence_min > 0 or confidence_max < 1:
+        where_parts.append("confidence_aiy BETWEEN ? AND ?")
+        params.extend([confidence_min, confidence_max])
+    if inbox_status:
+        where_parts.append("inbox_status = ?")
+        params.append(inbox_status)
+    if date_from:
+        where_parts.append("timestamp >= ?")
+        params.append(date_from + "T00:00:00")
+    if date_to:
+        where_parts.append("timestamp <= ?")
+        params.append(date_to + "T23:59:59")
+
+    where_clause = " AND ".join(where_parts)
+
+    cursor.execute(f"SELECT COUNT(*) FROM sightings WHERE {where_clause}", params)
+    total = cursor.fetchone()[0]
+
+    offset = (page - 1) * limit
+    cursor.execute(
+        f"""SELECT * FROM sightings WHERE {where_clause}
+           ORDER BY is_favorite DESC, timestamp DESC
+           LIMIT ? OFFSET ?""",
+        params + [limit, offset]
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return {"total": total, "page": page, "limit": limit, "items": [dict(r) for r in rows]}
+
+
+@app.post("/api/sightings/delete-filtered")
+async def delete_filtered(filters: dict):
+    """Move matching sightings to trash (is_trashed=1). Reversible - files
+    are untouched. Permanent removal only happens via /api/trash/empty."""
+    where_clause, params = _build_filter_where(filters)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE sightings SET is_trashed = 1 WHERE {where_clause}", params)
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return {"trashed": count}
+
+
+@app.post("/api/sightings/retag")
+async def retag_filtered(payload: dict):
+    """Body: {"filters": {...}, "new_species": "..."}. Sets species_confirmed
+    on every sighting matching the filters."""
+    filters = payload.get("filters", {})
+    new_species = payload.get("new_species")
+    if not new_species:
+        return {"error": "new_species is required"}
+    where_clause, params = _build_filter_where(filters)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"UPDATE sightings SET species_confirmed = ? WHERE {where_clause}",
+        [new_species] + params
+    )
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return {"retagged": count}
+
+
+@app.post("/api/trash/empty")
+async def empty_trash():
+    """Permanently delete trashed sightings AND their image files. Not reversible."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, filename FROM sightings WHERE is_trashed = 1")
+    rows = cursor.fetchall()
+    deleted = 0
+    for sighting_id, filename in rows:
+        image_path = os.path.join(DATA_DIR, filename)
+        if os.path.exists(image_path):
+            os.remove(image_path)
+        cursor.execute("DELETE FROM sightings WHERE id = ?", (sighting_id,))
+        deleted += 1
+    conn.commit()
+    conn.close()
+    return {"permanently_deleted": deleted}
+
+
+@app.get("/api/stats")
+async def stats():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM sightings WHERE is_trashed=0")
+    total = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM sightings WHERE is_trashed=0 AND confidence_aiy < 0.5")
+    low_conf = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM sightings WHERE is_trashed=1")
+    trashed = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT species_aiy, COUNT(*) as count
+        FROM sightings
+        WHERE is_trashed=0 AND confidence_aiy > 0.5
+        GROUP BY species_aiy
+        ORDER BY count DESC
+        LIMIT 5
+    """)
+    top_species = [{"species": r[0], "count": r[1]} for r in cursor.fetchall()]
+
+    conn.close()
+    return {
+        "total_sightings": total,
+        "low_confidence_count": low_conf,
+        "trashed_count": trashed,
+        "top_species": top_species
+    }
+
+
+@app.get("/api/species-list")
+async def species_list():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT species_confirmed FROM sightings
+        WHERE is_trashed=0 AND species_confirmed IS NOT NULL
+        UNION
+        SELECT DISTINCT species_aiy FROM sightings
+        WHERE is_trashed=0 AND species_aiy IS NOT NULL AND species_aiy != 'background'
+        ORDER BY 1
+    """)
+    species = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return {"species": species}
