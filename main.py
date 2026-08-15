@@ -7,6 +7,134 @@ from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse
 from migration import migrate_v1_to_v2
+
+# Manage page HTML
+manage_page_html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Sightings</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 20px; }
+        h1 { margin-bottom: 20px; font-size: 24px; }
+        .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; padding: 15px; background: #fafafa; border-radius: 6px; }
+        .filter-group { display: flex; flex-direction: column; }
+        .filter-group label { font-size: 12px; font-weight: 600; color: #666; margin-bottom: 5px; }
+        input[type="text"], input[type="date"], input[type="range"], select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+        button { padding: 10px 16px; border: none; border-radius: 4px; font-size: 14px; font-weight: 600; cursor: pointer; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .pagination { display: flex; gap: 10px; align-items: center; }
+        .table-wrapper { overflow-x: auto; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f8f9fa; padding: 12px; text-align: left; font-weight: 600; font-size: 13px; border-bottom: 2px solid #dee2e6; }
+        td { padding: 12px; border-bottom: 1px solid #dee2e6; }
+        tr:hover { background: #f9f9f9; }
+        .thumb { width: 50px; height: 50px; object-fit: cover; cursor: pointer; border-radius: 4px; }
+        .status { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+        .status.identified { background: #d4edda; color: #155724; }
+        .status.trashed { background: #f8d7da; color: #721c24; }
+        .lightbox { display: none; position: fixed; z-index: 999; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); }
+        .lightbox.active { display: flex; align-items: center; justify-content: center; }
+        .lightbox img { max-width: 90%; max-height: 90%; }
+        .lightbox-close { position: absolute; top: 20px; right: 30px; color: white; font-size: 28px; cursor: pointer; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+        .modal.active { display: flex; align-items: center; justify-content: center; }
+        .modal-content { background: white; padding: 30px; border-radius: 8px; min-width: 300px; }
+        .modal-content h2 { margin-bottom: 15px; }
+        .modal-content input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 4px; }
+        .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; }
+        .info { padding: 12px; background: #e7f3ff; border-left: 4px solid #007bff; margin-bottom: 15px; font-size: 13px; display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Manage Sightings</h1>
+        <div class="info" id="info"></div>
+        <div class="filters">
+            <div class="filter-group"><label>Date From</label><input type="date" id="dateFrom"></div>
+            <div class="filter-group"><label>Date To</label><input type="date" id="dateTo"></div>
+            <div class="filter-group"><label>Species</label><select id="species"><option value="">All Species</option></select></div>
+            <div class="filter-group"><label>Min Confidence: <span id="confLabel">0%</span></label><input type="range" id="confidence" min="0" max="100" value="0"></div>
+        </div>
+        <div class="controls">
+            <button class="btn-primary" onclick="applyFilters()">Apply Filters</button>
+            <button class="btn-secondary" onclick="clearFilters()">Clear</button>
+            <span id="selectedCount" style="margin-left: auto; color: #666;"></span>
+        </div>
+        <div class="controls">
+            <button class="btn-success" onclick="markFavorite()" id="btnFav" disabled>★ Favorite</button>
+            <button class="btn-primary" onclick="retag()" id="btnRetag" disabled>Retag</button>
+            <button class="btn-danger" onclick="deleteSelected()" id="btnDel" disabled>Delete</button>
+        </div>
+        <div class="controls pagination">
+            <label>Per page:</label>
+            <select id="perPage" onchange="applyFilters()">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+            <span id="pageInfo" style="margin-left: auto;"></span>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+                        <th style="width:60px;">Image</th>
+                        <th>Species</th>
+                        <th style="width:90px;">Confidence</th>
+                        <th style="width:140px;">Date</th>
+                        <th style="width:80px;">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="tbody"><tr><td colspan="6" style="text-align:center; padding:40px; color:#999;">Loading...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+        <span class="lightbox-close" onclick="event.stopPropagation()">&times;</span>
+        <img id="lightboxImg" onclick="event.stopPropagation()">
+    </div>
+    <div class="modal" id="retagModal">
+        <div class="modal-content">
+            <h2>Retag Selected</h2>
+            <label>New Species Name:</label>
+            <input type="text" id="retagInput" placeholder="e.g., American Robin">
+            <div class="modal-buttons">
+                <button class="btn-secondary" onclick="closeRetagModal()">Cancel</button>
+                <button class="btn-primary" onclick="executeRetag()">Retag</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        let currentPage = 1, allSightings = [], selectedIds = new Set();
+        async function loadSpecies() { const res = await fetch('/api/species-list'); const data = await res.json(); const sel = document.getElementById('species'); data.species.forEach(sp => { const opt = document.createElement('option'); opt.value = opt.textContent = sp; sel.appendChild(opt); }); }
+        async function applyFilters() { currentPage = 1; selectedIds.clear(); document.getElementById('selectAll').checked = false; updateSelectedCount(); await loadSightings(); }
+        async function loadSightings() { const dateFrom = document.getElementById('dateFrom').value; const dateTo = document.getElementById('dateTo').value; const species = document.getElementById('species').value; const conf = parseInt(document.getElementById('confidence').value) / 100; const perPage = parseInt(document.getElementById('perPage').value); const params = new URLSearchParams({ confidence_min: conf, confidence_max: 1.0, page: currentPage, limit: perPage }); if (dateFrom) params.append('date_from', dateFrom); if (dateTo) params.append('date_to', dateTo); if (species) params.append('species', species); const res = await fetch(`/api/sightings?${params}`); const data = await res.json(); allSightings = data.items; const tbody = document.getElementById('tbody'); tbody.innerHTML = ''; if (allSightings.length === 0) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:40px; color:#999;">No sightings found</td></tr>'; document.getElementById('pageInfo').textContent = 'No results'; return; } allSightings.forEach(s => { const statusClass = s.is_trashed ? 'trashed' : 'identified'; const tr = document.createElement('tr'); tr.innerHTML = `<td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td><td><img src="/images/${s.filename}" class="thumb" onclick="showLightbox('/images/${s.filename}')"></td><td>${s.species_confirmed || s.species_aiy || 'Unknown'}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${s.timestamp}</small></td><td><span class="status ${statusClass}">${s.is_trashed ? 'Trashed' : 'Identified'}</span></td>`; tbody.appendChild(tr); }); const totalPages = Math.ceil(data.total / perPage); document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages} (${data.total} total)`; }
+        function toggleSelectAll() { const checked = document.getElementById('selectAll').checked; document.querySelectorAll('tbody input[type="checkbox"]').forEach(cb => cb.checked = checked); updateSelectedCount(); }
+        function updateSelectedCount() { selectedIds.clear(); document.querySelectorAll('tbody input[type="checkbox"]:checked').forEach(cb => selectedIds.add(parseInt(cb.value))); document.getElementById('selectedCount').textContent = selectedIds.size + ' selected'; ['btnDel', 'btnRetag', 'btnFav'].forEach(id => document.getElementById(id).disabled = selectedIds.size === 0); }
+        function showLightbox(src) { document.getElementById('lightboxImg').src = src; document.getElementById('lightbox').classList.add('active'); }
+        function closeLightbox() { document.getElementById('lightbox').classList.remove('active'); }
+        function clearFilters() { document.getElementById('dateFrom').value = document.getElementById('dateTo').value = document.getElementById('species').value = ''; document.getElementById('confidence').value = 0; document.getElementById('confLabel').textContent = '0%'; applyFilters(); }
+        async function deleteSelected() { if (!confirm(`Move ${selectedIds.size} sighting(s) to trash?`)) return; const res = await fetch('/api/sightings/delete-filtered', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({filters: {}}) }); const data = await res.json(); showInfo(`Moved ${data.trashed} to trash`); selectedIds.clear(); await applyFilters(); }
+        function retag() { document.getElementById('retagModal').classList.add('active'); document.getElementById('retagInput').focus(); }
+        function closeRetagModal() { document.getElementById('retagModal').classList.remove('active'); }
+        async function executeRetag() { const newSpecies = document.getElementById('retagInput').value.trim(); if (!newSpecies) { alert('Enter a species name'); return; } const res = await fetch('/api/sightings/retag', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({filters: {}, new_species: newSpecies}) }); const data = await res.json(); showInfo(`Retagged ${data.retagged} to "${newSpecies}"`); closeRetagModal(); selectedIds.clear(); await applyFilters(); }
+        function markFavorite() { showInfo(`Marked ${selectedIds.size} as favorite (coming soon)`); }
+        function showInfo(msg) { const info = document.getElementById('info'); info.textContent = msg; info.style.display = 'block'; setTimeout(() => info.style.display = 'none', 4000); }
+        document.getElementById('confidence').addEventListener('input', e => document.getElementById('confLabel').textContent = e.target.value + '%');
+        loadSpecies(); applyFilters();
+    </script>
+</body>
+</html>
+"""
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import tflite_runtime.interpreter as tflite
@@ -82,6 +210,9 @@ def load_aiy_model():
 
 load_aiy_model()
 
+@app.get("/manage")
+async def manage_page():
+    return HTMLResponse(manage_page_html)
 
 def classify_aiy(image_path):
     """Run the Google AIY bird classifier. Returns (species, confidence) or (None, None) if unavailable.
