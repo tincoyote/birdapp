@@ -20,6 +20,16 @@ MODEL_DIR = "/app/models"
 AIY_MODEL_PATH = os.path.join(MODEL_DIR, "aiy_birds_v1.tflite")
 AIY_LABELS_PATH = os.path.join(MODEL_DIR, "aiy_birds_labelmap.csv")
 
+# Birdbath crop box (left, top, right, bottom) in the original 1920x1080 frame.
+# Determined by visually checking candidate boxes against real capture photos
+# (not just the motion-detection ROI, which is intentionally more generous).
+# This box was verified to fully contain both the bath rim/bowl AND a bird
+# perched at the left rim edge - a real position confirmed from an actual photo,
+# not just a symmetric guess. Cropping here before the classifier resizes down
+# to its small input size preserves far more pixel detail on the bird itself,
+# instead of spending that detail on driveway/street in the background.
+CROP_BOX = (500, 400, 1300, 900)
+
 os.makedirs(DATA_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
@@ -91,7 +101,12 @@ def classify_aiy(image_path):
         return None, None
     try:
         _, height, width, _ = aiy_input_details[0]['shape']
-        img = Image.open(image_path).convert("RGB").resize((width, height))
+        img = Image.open(image_path).convert("RGB")
+        # Crop to the birdbath area before resizing, so the bird gets the
+        # classifier's full input resolution instead of sharing it with the
+        # driveway/street that surround it in the full wide-angle frame.
+        img = img.crop(CROP_BOX)
+        img = img.resize((width, height))
         arr = np.array(img)
 
         input_dtype = aiy_input_details[0]['dtype']
