@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse
-from migration import migrate_v1_to_v2
+from migration import migrate_v1_to_v2, migrate_v2_to_v3
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import tflite_runtime.interpreter as tflite
@@ -58,6 +58,7 @@ def init_db():
 
 init_db()
 migrate_v1_to_v2(DB_PATH)
+migrate_v2_to_v3(DB_PATH)
 
 # --- AIY (Google) bird classifier: loads once at startup, fails soft if files are missing ---
 aiy_interpreter = None
@@ -92,6 +93,29 @@ def load_aiy_model():
 
 
 load_aiy_model()
+
+# --- Scientific -> common name mapping. The AIY labelmap only ships scientific
+# names (id,name) with no common-name column, so this is a separately-built
+# lookup, generated once via the iNaturalist taxa API and checked into the
+# repo as a static file rather than calling out to that API at runtime. ---
+COMMON_NAMES_PATH = os.path.join(os.path.dirname(__file__), "common_names.csv")
+common_names = {}
+
+
+def load_common_names():
+    global common_names
+    if not os.path.exists(COMMON_NAMES_PATH):
+        logger.warning("common_names.csv not found - common_name will stay blank")
+        return
+    with open(COMMON_NAMES_PATH, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get("scientific_name") and row.get("common_name"):
+                common_names[row["scientific_name"]] = row["common_name"]
+    logger.info("Loaded %d scientific->common name mappings", len(common_names))
+
+
+load_common_names()
 
 def classify_aiy(image_path):
     """Run the Google AIY bird classifier. Returns (species, confidence) or (None, None) if unavailable.
@@ -158,6 +182,7 @@ def classify_and_save(image_path, sighting_id):
     conn.commit()
 
     species_aiy, confidence_aiy = classify_aiy(image_path)
+    common_name = common_names.get(species_aiy) if species_aiy else None
 
     # species_inat / confidence_inat intentionally left NULL for now.
     # iNaturalist small-model integration is a follow-up step, not yet wired in
@@ -169,9 +194,10 @@ def classify_and_save(image_path, sighting_id):
     cursor.execute(
         """UPDATE sightings
            SET status = 'identified', species_aiy = ?, confidence_aiy = ?,
-               species_inat = ?, confidence_inat = ?, classifier_agreement = ?
+               species_inat = ?, confidence_inat = ?, classifier_agreement = ?,
+               common_name = ?
            WHERE id = ?""",
-        (species_aiy, confidence_aiy, species_inat, confidence_inat, agreement, sighting_id)
+        (species_aiy, confidence_aiy, species_inat, confidence_inat, agreement, common_name, sighting_id)
     )
     conn.commit()
     conn.close()

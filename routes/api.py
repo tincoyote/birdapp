@@ -26,29 +26,38 @@ async def update_review_status(sighting_id: int, body: dict):
 @router.post("/api/sightings/{sighting_id}/resend-classifier")
 async def resend_classifier(sighting_id: int):
     """Re-run the AIY classifier on a single sighting. Updates species/confidence
-    in place, stays in whatever review_status it was already in."""
-    from main import DB_PATH, DATA_DIR, classify_aiy, compute_agreement
+    in place, stays in whatever review_status it was already in. Increments
+    classification_attempts each time this is called."""
+    from main import DB_PATH, DATA_DIR, classify_aiy, compute_agreement, common_names
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT filename FROM sightings WHERE id = ?", (sighting_id,))
+    cursor.execute("SELECT filename, classification_attempts FROM sightings WHERE id = ?", (sighting_id,))
     result = cursor.fetchone()
     if not result:
         conn.close()
         return {"error": "Sighting not found"}
 
-    filename = result[0]
+    filename, prior_attempts = result
     image_path = os.path.join(DATA_DIR, filename)
     species_aiy, confidence_aiy = classify_aiy(image_path)
+    common_name = common_names.get(species_aiy) if species_aiy else None
     agreement = compute_agreement(species_aiy, confidence_aiy, None, None)
+    new_attempts = (prior_attempts or 0) + 1
 
     cursor.execute(
-        "UPDATE sightings SET species_aiy = ?, confidence_aiy = ?, classifier_agreement = ? WHERE id = ?",
-        (species_aiy, confidence_aiy, agreement, sighting_id)
+        """UPDATE sightings
+           SET species_aiy = ?, confidence_aiy = ?, classifier_agreement = ?,
+               common_name = ?, classification_attempts = ?
+           WHERE id = ?""",
+        (species_aiy, confidence_aiy, agreement, common_name, new_attempts, sighting_id)
     )
     conn.commit()
     conn.close()
-    return {"id": sighting_id, "species_aiy": species_aiy, "confidence_aiy": confidence_aiy}
+    return {
+        "id": sighting_id, "species_aiy": species_aiy, "confidence_aiy": confidence_aiy,
+        "common_name": common_name, "classification_attempts": new_attempts
+    }
 
 
 @router.post("/api/trash-review/empty")
