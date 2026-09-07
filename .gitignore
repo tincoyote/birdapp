@@ -1,6 +1,11 @@
 # Runtime data - not source code
 data/
 
+# Real credentials - never committed. See .env.example for the expected
+# shape. docker-compose.yml reads ADMIN_USERNAME/ADMIN_PASSWORD from this
+# file automatically.
+.env
+
 # Python bytecode cache - regenerates automatically, not source
 __pycache__/
 *.pyc

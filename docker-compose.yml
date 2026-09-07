@@ -9,5 +9,15 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    env_file:
+      # Loads ADMIN_USERNAME/ADMIN_PASSWORD directly as real container env
+      # vars (gitignored, real values only). Deliberately NOT using
+      # ${ADMIN_USERNAME}-style substitution in `environment:` below - if
+      # .env goes missing, that pattern silently substitutes an empty
+      # string rather than actually failing, which is a worse outcome than
+      # the loud "changeme" default this whole setup exists to avoid.
+      # env_file instead raises a clear error if .env isn't found. See
+      # .env.example for the expected shape.
+      - .env
     environment:
       - CAMERA_URL=http://192.168.86.32/image.jpg

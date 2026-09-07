@@ -84,9 +84,36 @@ def migrate_v2_to_v3(db_path):
     conn.close()
 
 
+def migrate_v3_to_v4(db_path):
+    """Add species-ID queue scaffolding: needs_species_id / species_id_status.
+    Deliberately a SEPARATE column pair from review_status, not a new
+    review_status value - the human approve/reject workflow (Manage/Gallery/
+    Trash) and "does this need a second-opinion classifier eventually" are
+    independent questions. A sighting can be approved to Gallery by a human
+    today and still sit in the species-ID queue waiting for a second
+    classifier that doesn't exist yet - decoupling these means building the
+    queue now doesn't touch or risk the working review workflow at all.
+    Same idempotent PRAGMA table_info pattern as prior migrations.
+    """
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("PRAGMA table_info(sightings)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    if "needs_species_id" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN needs_species_id INTEGER DEFAULT 0")
+    if "species_id_status" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN species_id_status TEXT DEFAULT 'not_queued'")
+
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else "/app/data/birds.db"
     migrate_v1_to_v2(path)
     migrate_v2_to_v3(path)
+    migrate_v3_to_v4(path)
     print(f"Migration complete: {path}")

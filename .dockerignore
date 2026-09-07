@@ -1,0 +1,16 @@
+# Without this file, the Dockerfile's `COPY . .` bakes these into the image.
+# Two real problems that solves:
+#  1. .env holds the real admin password - it would end up in an image layer
+#     even though it's correctly gitignored. env_file: in docker-compose.yml
+#     supplies it at RUNTIME from the host, so the image never needs a copy.
+#  2. data/ is 180+ JPEGs plus birds.db - all of it is volume-mounted at
+#     runtime (./data:/app/data), so copying it in just bloats the image
+#     with a stale duplicate that gets shadowed by the mount anyway.
+.env
+data/
+
+# Not needed inside the image
+.git/
+__pycache__/
+*.pyc
+*.syno.tar
