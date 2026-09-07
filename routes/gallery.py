@@ -112,7 +112,7 @@ async def gallery_page():
                 const dateTo = document.getElementById('dateTo').value;
                 const species = document.getElementById('species').value;
 
-                const params = new URLSearchParams({ review_status: 'approved', page: 1, limit: 1000 });
+                const params = new URLSearchParams({ review_status: 'approved', page: 1, limit: 200 });
                 if (dateFrom) params.append('date_from', dateFrom);
                 if (dateTo) params.append('date_to', dateTo);
                 if (species) params.append('species', species);
