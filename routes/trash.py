@@ -81,15 +81,23 @@ async def trash_page():
         </div>
         
         <script>
+            let speciesLabels = {};
+
             async function loadSpecies() {
                 const res = await fetch('/api/species-list');
                 const data = await res.json();
                 const sel = document.getElementById('species');
                 data.species.forEach(sp => {
+                    speciesLabels[sp.value] = sp.label;
                     const opt = document.createElement('option');
-                    opt.value = opt.textContent = sp;
+                    opt.value = sp.value;
+                    opt.textContent = sp.label;
                     sel.appendChild(opt);
                 });
+            }
+
+            function commonName(s) {
+                return s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
             }
             
             async function applyFilters() {
@@ -116,7 +124,7 @@ async def trash_page():
                 data.items.forEach(s => {
                     const tr = document.createElement('tr');
                     const rejectedDate = (s.review_updated_at || s.timestamp || '').split('T')[0];
-                    tr.innerHTML = `<td><img src="/images/${s.filename}" class="thumb"></td><td>${s.species_aiy || 'Unknown'}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${rejectedDate}</small></td><td><button class="btn-warning" onclick="restoreItem(${s.id})">Restore</button></td>`;
+                    tr.innerHTML = `<td><img src="/images/${s.filename}" class="thumb"></td><td>${commonName(s)}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${rejectedDate}</small></td><td><button class="btn-warning" onclick="restoreItem(${s.id})">Restore</button></td>`;
                     tbody.appendChild(tr);
                 });
                 
@@ -138,7 +146,7 @@ async def trash_page():
             
             async function restoreAll() {
                 if (!confirm('Restore all currently-visible items to review?')) return;
-                const params = new URLSearchParams({ review_status: 'rejected', sort_by: 'review_updated_at', limit: 1000 });
+                const params = new URLSearchParams({ review_status: 'rejected', sort_by: 'review_updated_at', limit: 200 });
                 const dateFrom = document.getElementById('dateFrom').value;
                 const dateTo = document.getElementById('dateTo').value;
                 const species = document.getElementById('species').value;
