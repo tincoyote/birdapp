@@ -474,7 +474,10 @@ async def species_list():
     """)
     species = [row[0] for row in cursor.fetchall()]
     conn.close()
-    return {"species": species}
+    # value = the actual DB value filters compare against (scientific name, or
+    # a manually-confirmed name); label = common name where we have one,
+    # falling back to the raw value so custom/unmapped entries still display.
+    return {"species": [{"value": s, "label": common_names.get(s, s)} for s in species]}
 
 
 # New modular routes: manage (review), gallery (approved), trash (rejected),

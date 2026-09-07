@@ -6,7 +6,9 @@ router = APIRouter()
 
 @router.get("/manage")
 async def manage_page():
-    """Bulk review of pending_review sightings. Filter, batch Accept/Resend/Delete."""
+    """Bulk review of pending_review sightings. Filter, batch Accept/Resend/Delete,
+    or open a single sighting in the preview modal for one-at-a-time triage with
+    next/prev navigation and inline Approve/Resend/Reject actions."""
     html = """
     <!DOCTYPE html>
     <html>
@@ -39,10 +41,6 @@ async def manage_page():
             td { padding: 12px; border-bottom: 1px solid #dee2e6; }
             tr:hover { background: #f9f9f9; }
             .thumb { width: 50px; height: 50px; object-fit: cover; cursor: pointer; border-radius: 4px; }
-            .lightbox { display: none; position: fixed; z-index: 999; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); }
-            .lightbox.active { display: flex; align-items: center; justify-content: center; }
-            .lightbox img { max-width: 90%; max-height: 90%; border-radius: 4px; }
-            .lightbox-close { position: absolute; top: 20px; right: 30px; color: white; font-size: 28px; cursor: pointer; user-select: none; }
             .info { padding: 12px; background: #e7f3ff; border-left: 4px solid #007bff; margin-bottom: 15px; font-size: 13px; display: none; }
             .busy-overlay { display: none; position: fixed; z-index: 1001; left: 0; top: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.85); align-items: center; justify-content: center; flex-direction: column; }
             .busy-overlay.active { display: flex; }
@@ -56,27 +54,27 @@ async def manage_page():
             <h1>Manage - Review Sightings</h1>
             __NAV__
             <div class="info" id="info"></div>
-            
+
             <div class="filters">
                 <div class="filter-group"><label>Date From</label><input type="date" id="dateFrom"></div>
                 <div class="filter-group"><label>Date To</label><input type="date" id="dateTo"></div>
                 <div class="filter-group"><label>Species</label><select id="species"><option value="">All Species</option></select></div>
                 <div class="filter-group"><label>Max Confidence: <span id="confLabel">100%</span></label><input type="range" id="confidence" min="0" max="100" value="100"></div>
             </div>
-            
+
             <div class="controls">
                 <button class="btn-primary" onclick="applyFilters()">Apply Filters</button>
                 <button class="btn-secondary" onclick="clearFilters()">Clear</button>
                 <button class="btn-primary" onclick="autoPopulateDates()" style="margin-left: 10px;">Auto-populate Dates</button>
                 <span id="selectedCount" style="margin-left: auto; color: #666;"></span>
             </div>
-            
+
             <div class="controls">
-                <button class="btn-success" onclick="acceptSelected()" id="btnAccept" disabled>✓ Accept to Gallery</button>
-                <button class="btn-primary" onclick="resendSelected()" id="btnResend" disabled>↻ Resend to Classifier</button>
-                <button class="btn-danger" onclick="deleteSelected()" id="btnDel" disabled>🗑 Reject to Trash</button>
+                <button class="btn-success" onclick="acceptSelected()" id="btnAccept" disabled>Accept to Gallery</button>
+                <button class="btn-primary" onclick="resendSelected()" id="btnResend" disabled>Resend to Classifier</button>
+                <button class="btn-danger" onclick="deleteSelected()" id="btnDel" disabled>Reject to Trash</button>
             </div>
-            
+
             <div class="controls pagination">
                 <label>Per page:</label>
                 <select id="perPage" onchange="applyFilters()">
@@ -87,47 +85,61 @@ async def manage_page():
                 </select>
                 <span id="pageInfo" style="margin-left: auto;"></span>
             </div>
-            
             <div class="table-wrapper">
                 <table>
                     <thead>
                         <tr>
                             <th style="width:40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
                             <th style="width:60px;">Image</th>
+                            <th>Common Name</th>
                             <th>Species (Latin)</th>
+                            <th style="width:70px;">Attempts</th>
                             <th style="width:90px;">Confidence</th>
                             <th style="width:140px;">Date</th>
                         </tr>
                     </thead>
-                    <tbody id="tbody"><tr><td colspan="5" style="text-align:center; padding:40px; color:#999;">Loading...</td></tr></tbody>
+                    <tbody id="tbody"><tr><td colspan="7" style="text-align:center; padding:40px; color:#999;">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>
-        
-        <div class="lightbox" id="lightbox">
-            <span class="lightbox-close" onclick="closeLightbox()">&times;</span>
-            <img id="lightboxImg" onclick="event.stopPropagation()">
+
+        <div class="lightbox" id="previewModal" style="display:none; position:fixed; z-index:999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.9); align-items:center; justify-content:center; flex-direction:column;">
+            <span onclick="closePreview()" style="position:absolute; top:20px; right:30px; color:white; font-size:28px; cursor:pointer; user-select:none;">&times;</span>
+            <button onclick="navPreview(-1)" style="position:absolute; left:20px; top:50%; transform:translateY(-50%); font-size:28px; padding:14px 18px; background:rgba(255,255,255,0.15); color:white;">&#8592;</button>
+            <button onclick="navPreview(1)" style="position:absolute; right:20px; top:50%; transform:translateY(-50%); font-size:28px; padding:14px 18px; background:rgba(255,255,255,0.15); color:white;">&#8594;</button>
+            <img id="previewImg" style="max-width:80%; max-height:65%; border-radius:4px;">
+            <div style="color:white; margin-top:15px; text-align:center;">
+                <div id="previewCommon" style="font-size:20px; font-weight:600;"></div>
+                <div id="previewMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
+            </div>
+            <div class="controls" style="margin-top:18px;">
+                <button class="btn-success" onclick="previewAction('approve')">Approve to Gallery</button>
+                <button class="btn-primary" onclick="previewAction('resend')">Resend to Classifier</button>
+                <button class="btn-danger" onclick="previewAction('reject')">Reject to Trash</button>
+            </div>
         </div>
-        
+
         <div class="busy-overlay" id="busyOverlay">
             <div class="spinner"></div>
             <div class="busy-msg" id="busyMsg">Working...</div>
         </div>
-        
+
         <script>
-            let currentPage = 1, allSightings = [], selectedIds = new Set();
-            
+            let currentPage = 1, allSightings = [], selectedIds = new Set(), previewIndex = -1;
+            let speciesLabels = {};
+
             async function loadSpecies() {
                 const res = await fetch('/api/species-list');
                 const data = await res.json();
                 const sel = document.getElementById('species');
                 data.species.forEach(sp => {
+                    speciesLabels[sp.value] = sp.label;
                     const opt = document.createElement('option');
-                    opt.value = opt.textContent = sp;
+                    opt.value = sp.value;
+                    opt.textContent = sp.label;
                     sel.appendChild(opt);
                 });
             }
-            
             async function autoPopulateDates() {
                 const res = await fetch('/api/sightings?review_status=pending_review&limit=1');
                 const data = await res.json();
@@ -137,7 +149,7 @@ async def manage_page():
                 document.getElementById('dateTo').value = Math.max(...dates);
                 applyFilters();
             }
-            
+
             async function applyFilters() {
                 currentPage = 1;
                 selectedIds.clear();
@@ -145,14 +157,14 @@ async def manage_page():
                 updateSelectedCount();
                 await loadSightings();
             }
-            
+
             async function loadSightings() {
                 const dateFrom = document.getElementById('dateFrom').value;
                 const dateTo = document.getElementById('dateTo').value;
                 const species = document.getElementById('species').value;
                 const conf = parseInt(document.getElementById('confidence').value) / 100;
                 const perPage = parseInt(document.getElementById('perPage').value);
-                
+
                 const params = new URLSearchParams({
                     confidence_min: 0,
                     confidence_max: conf,
@@ -163,51 +175,112 @@ async def manage_page():
                 if (dateFrom) params.append('date_from', dateFrom);
                 if (dateTo) params.append('date_to', dateTo);
                 if (species) params.append('species', species);
-                
+
                 const res = await fetch(`/api/sightings?${params}`);
                 const data = await res.json();
                 allSightings = data.items;
-                
+
                 const tbody = document.getElementById('tbody');
                 tbody.innerHTML = '';
                 if (allSightings.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:40px; color:#999;">No sightings found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:40px; color:#999;">No sightings found</td></tr>';
                     document.getElementById('pageInfo').textContent = 'No results';
                     return;
                 }
-                
-                allSightings.forEach(s => {
+
+                allSightings.forEach((s, idx) => {
                     const tr = document.createElement('tr');
-                    tr.innerHTML = `<td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td><td><img src="/images/${s.filename}" class="thumb" onclick="showLightbox('/images/${s.filename}')"></td><td>${s.species_aiy || 'Unknown'}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${s.timestamp.split('T')[0]}</small></td>`;
+                    const common = s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
+                    tr.innerHTML = `<td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td><td><img src="/images/${s.filename}" class="thumb" onclick="openPreview(${idx})"></td><td>${common}</td><td>${s.species_aiy || 'Unknown'}</td><td>${s.classification_attempts || 1}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${s.timestamp.split('T')[0]}</small></td>`;
                     tbody.appendChild(tr);
                 });
-                
+
                 const totalPages = Math.ceil(data.total / perPage);
                 document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages} (${data.total} total)`;
             }
-            
+
             function toggleSelectAll() {
                 const checked = document.getElementById('selectAll').checked;
                 document.querySelectorAll('tbody input[type="checkbox"]').forEach(cb => cb.checked = checked);
                 updateSelectedCount();
             }
-            
+
             function updateSelectedCount() {
                 selectedIds.clear();
                 document.querySelectorAll('tbody input[type="checkbox"]:checked').forEach(cb => selectedIds.add(parseInt(cb.value)));
                 document.getElementById('selectedCount').textContent = selectedIds.size + ' selected';
                 ['btnAccept', 'btnResend', 'btnDel'].forEach(id => document.getElementById(id).disabled = selectedIds.size === 0);
             }
-            
-            function showLightbox(src) {
-                document.getElementById('lightboxImg').src = src;
-                document.getElementById('lightbox').classList.add('active');
+            function openPreview(idx) {
+                previewIndex = idx;
+                renderPreview();
+                document.getElementById('previewModal').style.display = 'flex';
             }
-            
-            function closeLightbox() {
-                document.getElementById('lightbox').classList.remove('active');
+
+            function closePreview() {
+                document.getElementById('previewModal').style.display = 'none';
+                previewIndex = -1;
             }
-            
+
+            function renderPreview() {
+                if (previewIndex < 0 || previewIndex >= allSightings.length) { closePreview(); return; }
+                const s = allSightings[previewIndex];
+                const common = s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
+                document.getElementById('previewImg').src = `/images/${s.filename}`;
+                document.getElementById('previewCommon').textContent = common;
+                document.getElementById('previewMeta').textContent =
+                    `${s.species_aiy || 'Unknown'} - ${(s.confidence_aiy * 100).toFixed(0)}% - attempt ${s.classification_attempts || 1} - ${s.timestamp.split('T')[0]} (${previewIndex + 1} of ${allSightings.length})`;
+            }
+
+            function navPreview(delta) {
+                if (allSightings.length === 0) return;
+                previewIndex = (previewIndex + delta + allSightings.length) % allSightings.length;
+                renderPreview();
+            }
+
+            async function previewAction(action) {
+                if (previewIndex < 0) return;
+                const s = allSightings[previewIndex];
+                if (action === 'approve') {
+                    await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'approved'}) });
+                    allSightings.splice(previewIndex, 1);
+                } else if (action === 'reject') {
+                    await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) });
+                    allSightings.splice(previewIndex, 1);
+                } else if (action === 'resend') {
+                    const res = await fetch(`/api/sightings/${s.id}/resend-classifier`, { method: 'POST' });
+                    const updated = await res.json();
+                    Object.assign(s, updated);
+                }
+                // Reflect the change in the underlying table without a full
+                // reload, then move on - matches "advance to next image" for
+                // every action, per the plan, not just the removing ones.
+                loadSightingsTableOnly();
+                if (previewIndex >= allSightings.length) previewIndex = allSightings.length - 1;
+                renderPreview();
+            }
+
+            function loadSightingsTableOnly() {
+                const tbody = document.getElementById('tbody');
+                tbody.innerHTML = '';
+                if (allSightings.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:40px; color:#999;">No sightings found</td></tr>';
+                    return;
+                }
+                allSightings.forEach((s, idx) => {
+                    const tr = document.createElement('tr');
+                    const common = s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
+                    tr.innerHTML = `<td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td><td><img src="/images/${s.filename}" class="thumb" onclick="openPreview(${idx})"></td><td>${common}</td><td>${s.species_aiy || 'Unknown'}</td><td>${s.classification_attempts || 1}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${s.timestamp.split('T')[0]}</small></td>`;
+                    tbody.appendChild(tr);
+                });
+            }
+
+            document.addEventListener('keydown', e => {
+                if (document.getElementById('previewModal').style.display !== 'flex') return;
+                if (e.key === 'ArrowLeft') navPreview(-1);
+                else if (e.key === 'ArrowRight') navPreview(1);
+                else if (e.key === 'Escape') closePreview();
+            });
             function clearFilters() {
                 document.getElementById('dateFrom').value = '';
                 document.getElementById('dateTo').value = '';
@@ -216,7 +289,7 @@ async def manage_page():
                 document.getElementById('confLabel').textContent = '100%';
                 applyFilters();
             }
-            
+
             async function acceptSelected() {
                 if (!confirm(`Accept ${selectedIds.size} to gallery?`)) return;
                 const ids = Array.from(selectedIds);
@@ -230,7 +303,7 @@ async def manage_page():
                 selectedIds.clear();
                 await applyFilters();
             }
-            
+
             async function resendSelected() {
                 if (!confirm(`Resend ${selectedIds.size} to classifier?`)) return;
                 const ids = Array.from(selectedIds);
@@ -244,7 +317,7 @@ async def manage_page():
                 selectedIds.clear();
                 await applyFilters();
             }
-            
+
             async function deleteSelected() {
                 if (!confirm(`Reject ${selectedIds.size} to trash?`)) return;
                 const ids = Array.from(selectedIds);
@@ -258,14 +331,14 @@ async def manage_page():
                 selectedIds.clear();
                 await applyFilters();
             }
-            
+
             function showInfo(msg) {
                 const info = document.getElementById('info');
                 info.textContent = msg;
                 info.style.display = 'block';
                 setTimeout(() => info.style.display = 'none', 4000);
             }
-            
+
             function setBusy(isBusy, msg) {
                 const overlay = document.getElementById('busyOverlay');
                 if (isBusy) {
@@ -276,7 +349,7 @@ async def manage_page():
                     overlay.classList.remove('active');
                 }
             }
-            
+
             document.getElementById('confidence').addEventListener('input', e => document.getElementById('confLabel').textContent = e.target.value + '%');
             loadSpecies();
             autoPopulateDates();
