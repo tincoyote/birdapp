@@ -100,7 +100,7 @@ async def gallery_page():
             }
 
             function commonName(s) {
-                return s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
+                return s.species_confirmed || s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
             }
 
             async function applyFilters() {
@@ -210,7 +210,6 @@ async def gallery_page():
             async function sendBackToReview() {
                 if (lightboxIndex < 0) return;
                 const s = flatList[lightboxIndex];
-                if (!confirm('Send this sighting back to review?')) return;
                 await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'pending_review'}) });
                 allSightings = allSightings.filter(x => x.id !== s.id);
                 closeLightbox();

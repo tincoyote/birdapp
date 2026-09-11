@@ -70,7 +70,7 @@ async def manage_page():
             </div>
 
             <div class="controls">
-                <button class="btn-success" onclick="acceptSelected()" id="btnAccept" disabled>Accept to Gallery</button>
+                <button class="btn-success" onclick="acceptSelected()" id="btnAccept" disabled>Send to Species Queue</button>
                 <button class="btn-primary" onclick="resendSelected()" id="btnResend" disabled>Resend to Classifier</button>
                 <button class="btn-danger" onclick="deleteSelected()" id="btnDel" disabled>Reject to Trash</button>
             </div>
@@ -93,12 +93,13 @@ async def manage_page():
                             <th style="width:60px;">Image</th>
                             <th>Common Name</th>
                             <th>Species (Latin)</th>
+                            <th style="width:90px;">SpeciesNet</th>
                             <th style="width:70px;">Attempts</th>
                             <th style="width:90px;">Confidence</th>
                             <th style="width:140px;">Date</th>
                         </tr>
                     </thead>
-                    <tbody id="tbody"><tr><td colspan="7" style="text-align:center; padding:40px; color:#999;">Loading...</td></tr></tbody>
+                    <tbody id="tbody"><tr><td colspan="8" style="text-align:center; padding:40px; color:#999;">Loading...</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -113,7 +114,7 @@ async def manage_page():
                 <div id="previewMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
             </div>
             <div class="controls" style="margin-top:18px;">
-                <button class="btn-success" onclick="previewAction('approve')">Approve to Gallery</button>
+                <button class="btn-success" onclick="previewAction('approve')">Send to Species Queue</button>
                 <button class="btn-primary" onclick="previewAction('resend')">Resend to Classifier</button>
                 <button class="btn-danger" onclick="previewAction('reject')">Reject to Trash</button>
             </div>
@@ -183,7 +184,7 @@ async def manage_page():
                 const tbody = document.getElementById('tbody');
                 tbody.innerHTML = '';
                 if (allSightings.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:40px; color:#999;">No sightings found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:40px; color:#999;">No sightings found</td></tr>';
                     document.getElementById('pageInfo').textContent = 'No results';
                     return;
                 }
@@ -191,7 +192,7 @@ async def manage_page():
                 allSightings.forEach((s, idx) => {
                     const tr = document.createElement('tr');
                     const common = s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
-                    tr.innerHTML = `<td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td><td><img src="/images/${s.filename}" class="thumb" onclick="openPreview(${idx})"></td><td>${common}</td><td>${s.species_aiy || 'Unknown'}</td><td>${s.classification_attempts || 1}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${s.timestamp.split('T')[0]}</small></td>`;
+                    tr.innerHTML = `<td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td><td><img src="/images/${s.filename}" class="thumb" onclick="openPreview(${idx})"></td><td>${common}</td><td>${s.species_aiy || 'Unknown'}</td><td>${speciesIdBadge(s.species_id_status)}</td><td>${s.classification_attempts || 1}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${s.timestamp.split('T')[0]}</small></td>`;
                     tbody.appendChild(tr);
                 });
 
@@ -229,7 +230,7 @@ async def manage_page():
                 document.getElementById('previewImg').src = `/images/${s.filename}`;
                 document.getElementById('previewCommon').textContent = common;
                 document.getElementById('previewMeta').textContent =
-                    `${s.species_aiy || 'Unknown'} - ${(s.confidence_aiy * 100).toFixed(0)}% - attempt ${s.classification_attempts || 1} - ${s.timestamp.split('T')[0]} (${previewIndex + 1} of ${allSightings.length})`;
+                    `${s.species_aiy || 'Unknown'} - ${(s.confidence_aiy * 100).toFixed(0)}% - attempt ${s.classification_attempts || 1} - SN: ${s.species_id_status || 'not_queued'} - ${s.timestamp.split('T')[0]} (${previewIndex + 1} of ${allSightings.length})`;
             }
 
             function navPreview(delta) {
@@ -242,7 +243,13 @@ async def manage_page():
                 if (previewIndex < 0) return;
                 const s = allSightings[previewIndex];
                 if (action === 'approve') {
-                    await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'approved'}) });
+                    // Queues for species ID - does NOT change review_status,
+                    // so this stays 'pending_review' server-side. Splicing
+                    // it out here just hides it for the rest of THIS working
+                    // session; a fresh page load will show it again, which
+                    // is correct given review_status and species_id_status
+                    // are deliberately independent fields.
+                    await fetch(`/api/sightings/${s.id}/queue-species-id`, { method: 'POST' });
                     allSightings.splice(previewIndex, 1);
                 } else if (action === 'reject') {
                     await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) });
@@ -264,13 +271,13 @@ async def manage_page():
                 const tbody = document.getElementById('tbody');
                 tbody.innerHTML = '';
                 if (allSightings.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:40px; color:#999;">No sightings found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:40px; color:#999;">No sightings found</td></tr>';
                     return;
                 }
                 allSightings.forEach((s, idx) => {
                     const tr = document.createElement('tr');
                     const common = s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
-                    tr.innerHTML = `<td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td><td><img src="/images/${s.filename}" class="thumb" onclick="openPreview(${idx})"></td><td>${common}</td><td>${s.species_aiy || 'Unknown'}</td><td>${s.classification_attempts || 1}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${s.timestamp.split('T')[0]}</small></td>`;
+                    tr.innerHTML = `<td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td><td><img src="/images/${s.filename}" class="thumb" onclick="openPreview(${idx})"></td><td>${common}</td><td>${s.species_aiy || 'Unknown'}</td><td>${speciesIdBadge(s.species_id_status)}</td><td>${s.classification_attempts || 1}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${s.timestamp.split('T')[0]}</small></td>`;
                     tbody.appendChild(tr);
                 });
             }
@@ -291,15 +298,15 @@ async def manage_page():
             }
 
             async function acceptSelected() {
-                if (!confirm(`Accept ${selectedIds.size} to gallery?`)) return;
+                if (!confirm(`Send ${selectedIds.size} to species queue?`)) return;
                 const ids = Array.from(selectedIds);
-                setBusy(true, `Accepting 0 of ${ids.length}...`);
+                setBusy(true, `Sending 0 of ${ids.length}...`);
                 for (let i = 0; i < ids.length; i++) {
-                    await fetch(`/api/sightings/${ids[i]}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'approved'}) });
-                    setBusy(true, `Accepting ${i + 1} of ${ids.length}...`);
+                    await fetch(`/api/sightings/${ids[i]}/queue-species-id`, { method: 'POST' });
+                    setBusy(true, `Sending ${i + 1} of ${ids.length}...`);
                 }
                 setBusy(false);
-                showInfo(`Accepted ${ids.length} to gallery`);
+                showInfo(`Sent ${ids.length} to species queue`);
                 selectedIds.clear();
                 await applyFilters();
             }
@@ -330,6 +337,17 @@ async def manage_page():
                 showInfo(`Rejected ${ids.length} to trash`);
                 selectedIds.clear();
                 await applyFilters();
+            }
+
+            function speciesIdBadge(status) {
+                const styles = {
+                    not_queued: ['#e2e3e5', '#383d41', 'Not queued'],
+                    queued: ['#fff3cd', '#856404', 'Queued'],
+                    classified: ['#cce5ff', '#004085', 'Ready to review'],
+                    confirmed: ['#d4edda', '#155724', 'Confirmed'],
+                };
+                const [bg, fg, text] = styles[status] || styles.not_queued;
+                return `<span style="display:inline-block; font-size:11px; font-weight:600; padding:2px 6px; border-radius:8px; background:${bg}; color:${fg};">${text}</span>`;
             }
 
             function showInfo(msg) {

@@ -26,6 +26,14 @@ app = FastAPI()
 # exposure - not a hypothetical one.
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME") or "changeme"
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or "changeme"
+# Optional second credential pair for scripts/automation (e.g. the
+# SpeciesNet second-opinion runner), so an automated caller never needs a
+# human's personal admin password. Deliberately NOT defaulted to "changeme"
+# like ADMIN_* above - for this pair, unset should mean "this path is
+# disabled", not "insecure default enabled". The bool() checks below exist
+# so two blank strings (both unset) can't accidentally satisfy each other.
+API_USERNAME = os.environ.get("API_USERNAME") or ""
+API_PASSWORD = os.environ.get("API_PASSWORD") or ""
 _security = HTTPBasic()
 
 
@@ -33,9 +41,16 @@ def verify_admin_auth(credentials: HTTPBasicCredentials = Depends(_security)):
     # secrets.compare_digest avoids a timing side-channel that a naive ==
     # comparison would have - not a huge deal for a single-family app, but
     # it's free correctness once you know to use it.
-    correct_username = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
-    correct_password = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
-    if not (correct_username and correct_password):
+    is_admin = (
+        secrets.compare_digest(credentials.username, ADMIN_USERNAME)
+        and secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
+    )
+    is_api = (
+        bool(API_USERNAME) and bool(API_PASSWORD)
+        and secrets.compare_digest(credentials.username, API_USERNAME)
+        and secrets.compare_digest(credentials.password, API_PASSWORD)
+    )
+    if not (is_admin or is_api):
         raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
     return credentials.username
 
@@ -53,7 +68,14 @@ AIY_LABELS_PATH = os.path.join(MODEL_DIR, "aiy_birds_labelmap.csv")
 # not just a symmetric guess. Cropping here before the classifier resizes down
 # to its small input size preserves far more pixel detail on the bird itself,
 # instead of spending that detail on driveway/street in the background.
-CROP_BOX = (500, 400, 1300, 900)
+# Loaded from camera_config.json (single shared source of truth also read by
+# run_second_opinion.py for the SpeciesNet crop) rather than hardcoded here -
+# see that file for the "why JSON, why not .env" reasoning. The verification
+# history above still applies to whatever value currently lives there.
+import json as _json
+with open(os.path.join(os.path.dirname(__file__), "camera_config.json")) as _f:
+    _camera_config = _json.load(_f)
+CROP_BOX = tuple(_camera_config["classifier_crop_box"])
 
 # Public-display crop box (left, top, right, bottom) in the original 1920x1080
 # frame. Deliberately a separate named constant from CROP_BOX above, even
@@ -77,8 +99,9 @@ CROP_BOX = (500, 400, 1300, 900)
 # corner, an explicitly accepted trade-off, not an oversight.
 # If the camera is ever physically re-aimed or reinstalled, re-verify this
 # the same way (grid overlay on a fresh photo, inspect the actual crop
-# output) before trusting it again.
-PUBLIC_DISPLAY_CROP = (400, 400, 1400, 962)
+# output) before trusting it again. Also loaded from camera_config.json now,
+# same reasoning as CROP_BOX above.
+PUBLIC_DISPLAY_CROP = tuple(_camera_config["public_display_crop"])
 
 # Auto-trash on low AIY confidence: DISABLED (set to None) after testing the
 # idea against the real 202-row database on 2026-09-07. Set to a float to
@@ -236,10 +259,18 @@ def classify_aiy(image_path):
         return None, None
 
 
-def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat):
+def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat, is_species_level_inat=True):
     """Determine classifier_agreement state from two classifiers' output.
     Handles the case where one classifier hasn't run / isn't wired in yet -
-    that's 'one_classifier', distinct from 'pending' (both still running)."""
+    that's 'one_classifier', distinct from 'pending' (both still running).
+
+    is_species_level_inat: whether species_inat is an actual species-level ID
+    (e.g. a SpeciesNet result with prediction_source=='classifier') rather
+    than a rollup to a higher taxonomic level or a bare detector label
+    ('bird', 'corvidae family', 'vehicle', 'no cv result'). A rollup isn't
+    really disagreeing with a specific species guess - it's declining to
+    commit - so it gets its own 'inconclusive' state instead of being lumped
+    in with a genuine species-level mismatch."""
     if species_aiy and not species_inat:
         return 'one_classifier'
     if species_inat and not species_aiy:
@@ -247,7 +278,10 @@ def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat
     if not species_aiy and not species_inat:
         return 'pending'
 
-    if species_aiy == species_inat:
+    if not is_species_level_inat:
+        return 'inconclusive'
+
+    if species_aiy.lower() == species_inat.lower():
         if confidence_aiy >= 0.75 and confidence_inat >= 0.75:
             return 'agreed'
         return 'low_confidence'
@@ -458,6 +492,7 @@ async def list_sightings(
     date_from: str = Query(None),
     date_to: str = Query(None),
     inbox_status: str = Query(None),
+    species_id_status: str = Query(None),
     review_status: str = Query(None),
     is_trashed: bool = Query(False),
     sort_by: str = Query("timestamp"),
@@ -489,6 +524,9 @@ async def list_sightings(
     if inbox_status:
         where_parts.append("inbox_status = ?")
         params.append(inbox_status)
+    if species_id_status:
+        where_parts.append("species_id_status = ?")
+        params.append(species_id_status)
     if date_from:
         where_parts.append("timestamp >= ?")
         params.append(date_from + "T00:00:00")

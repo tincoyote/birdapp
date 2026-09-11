@@ -1,0 +1,6 @@
+{
+  "_comment": "Shared camera framing config. Single source of truth for pixel boxes referenced by main.py (classifier crop, public display crop) and run_second_opinion.py (SpeciesNet crop). Checked into git deliberately - these are not secrets, and losing git-blame history on coordinate changes was worse than the alternative. prudynt.json's motion ROI on the camera itself is a separate system and is NOT read from here - it has to be updated by hand over SSH when this changes.",
+  "classifier_crop_box": [500, 400, 1300, 900],
+  "public_display_crop": [400, 400, 1400, 962],
+  "motion_roi_reference_only": [600, 500, 1200, 800]
+}

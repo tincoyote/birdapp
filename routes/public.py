@@ -32,7 +32,7 @@ async def public_species_list():
     conn = sqlite3.connect(_get_db_path())
     c = conn.cursor()
     c.execute("""
-        SELECT DISTINCT COALESCE(common_name, species_aiy) AS label, species_aiy
+        SELECT DISTINCT COALESCE(species_confirmed, common_name, species_aiy) AS label, species_aiy
         FROM sightings
         WHERE review_status = 'approved' AND species_aiy IS NOT NULL
         ORDER BY label
@@ -60,7 +60,7 @@ async def public_sightings(
     Funnel is on, so it's the one place in the app where SQL injection would
     actually be reachable by a stranger.
     """
-    sql = ["SELECT id, filename, timestamp, species_aiy, common_name",
+    sql = ["SELECT id, filename, timestamp, species_aiy, common_name, species_confirmed",
            "FROM sightings WHERE review_status = 'approved'"]
     params = []
 
@@ -85,10 +85,12 @@ async def public_sightings(
 
     # Thin payload on purpose: no confidence score, no review metadata, no
     # notes. Family doesn't need the classifier's internal uncertainty, and
-    # it's one less thing that could ever leak or confuse.
+    # it's one less thing that could ever leak or confuse. species_confirmed
+    # takes precedence when set - it's the human-reviewed final call from
+    # the Species Queue, not just AIY's original (sometimes wrong) guess.
     return {"items": [
         {"id": r["id"], "filename": r["filename"], "timestamp": r["timestamp"],
-         "label": r["common_name"] or r["species_aiy"] or "Unknown bird",
+         "label": r["species_confirmed"] or r["common_name"] or r["species_aiy"] or "Unknown bird",
          "species_aiy": r["species_aiy"]}
         for r in rows
     ]}
