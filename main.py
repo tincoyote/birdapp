@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Query, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from migration import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4
 from PIL import Image
 import tflite_runtime.interpreter as tflite
@@ -411,54 +411,30 @@ async def get_full_image(filename: str, username: str = Depends(verify_admin_aut
     return FileResponse(image_path)
 
 
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(username: str = Depends(verify_admin_auth)):
+@app.get("/sighting/{sighting_id}")
+async def sighting_by_id(sighting_id: int, username: str = Depends(verify_admin_auth)):
+    """Look up a sighting by its numeric id and redirect straight to its
+    full-res image. Exists purely so an id number (from this chat, an API
+    response, a log line) can be turned into an actual picture without
+    knowing the filename or writing a query - visit /sighting/910 and you're
+    looking at photo 910."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT timestamp, filename, status, species_aiy, confidence_aiy, species_confirmed "
-        "FROM sightings ORDER BY id DESC LIMIT 20"
-    )
-    rows = cursor.fetchall()
+    cursor.execute("SELECT filename FROM sightings WHERE id = ?", (sighting_id,))
+    row = cursor.fetchone()
     conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"No sighting with id {sighting_id}")
+    return RedirectResponse(url=f"/images/{row[0]}")
 
-    html = """
-    <html>
-        <head>
-            <title>Birdbath AI Classifier</title>
-            <style>
-                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; background: #f4f4f9; color: #333; }
-                h1 { color: #2c3e50; }
-                .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; }
-                .card { background: white; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-                img { width: 100%; height: 160px; object-fit: cover; border-radius: 4px; }
-                .status { font-size: 0.8em; color: #888; }
-            </style>
-        </head>
-        <body>
-            <h1>🐦 Birdbath Visitor Dashboard</h1>
-            __NAV__
-            <div class="grid">
-    """
-    for row in rows:
-        ts, fn, status, species_aiy, confidence_aiy, species_confirmed = row
-        display_species = species_confirmed or species_aiy or "Unidentified"
-        conf_str = f"{confidence_aiy:.0%}" if confidence_aiy is not None else ""
-        html += f"""
-            <div class="card">
-                <img src="/images/{fn}" />
-                <h3>{display_species}</h3>
-                <p><small>{ts}</small></p>
-                <p class="status">status: {status} {conf_str}</p>
-            </div>
-        """
-    html += """
-            </div>
-        </body>
-    </html>
-    """
-    html = html.replace("__NAV__", NAV_HTML)
-    return html
+
+@app.get("/")
+async def dashboard():
+    """The old dashboard here (last-20 sightings, no filtering, no actions)
+    was superseded by Gallery long ago and wasn't doing anything Gallery
+    doesn't already do better. Root now just redirects there instead of
+    keeping a second, worse version of the same idea alive."""
+    return RedirectResponse(url="/gallery")
 
 
 def _build_filter_where(f: dict):

@@ -223,8 +223,15 @@ async def species_queue_page():
                 const card = document.getElementById('card-' + id);
                 if (card) card.remove();
                 if (queueData.length === 0) {{ closeLightbox(); return; }}
+                // Deleting/picking always acts on the currently-viewed item
+                // (idx === lightboxIndex), so lightboxIndex should just stay
+                // put after the splice - the item that was "next" shifts
+                // down into this same slot automatically. The old code had
+                // an extra decrement branch here that fired on every single
+                // delete (since idx <= lightboxIndex is always true for the
+                // current item) and sent the lightbox backward to whatever
+                // was shown before, instead of forward to what's next.
                 if (lightboxIndex >= queueData.length) lightboxIndex = queueData.length - 1;
-                else if (idx <= lightboxIndex && lightboxIndex > 0) lightboxIndex -= 1;
                 renderLightbox();
             }}
 

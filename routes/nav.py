@@ -8,17 +8,16 @@ NAV_HTML = """
 </style>
 <div class="bird-nav">
     <span class="brand">🐦</span>
-    <a href="/" id="nav-home">Home</a>
     <a href="/manage" id="nav-manage">Manage</a>
     <a href="/gallery" id="nav-gallery">Gallery</a>
-    <a href="/trash" id="nav-trash">Trash</a>
     <a href="/species-queue" id="nav-species-queue">Species Queue</a>
+    <a href="/trash" id="nav-trash">Trash</a>
     <a href="/api/stats" id="nav-stats">Stats</a>
 </div>
 <script>
     (function() {
         const path = window.location.pathname;
-        const map = { '/': 'nav-home', '/manage': 'nav-manage', '/gallery': 'nav-gallery', '/trash': 'nav-trash', '/species-queue': 'nav-species-queue' };
+        const map = { '/gallery': 'nav-gallery', '/manage': 'nav-manage', '/trash': 'nav-trash', '/species-queue': 'nav-species-queue' };
         const id = map[path];
         if (id) document.getElementById(id).classList.add('active');
     })();

@@ -74,16 +74,20 @@ async def queue_species_id(sighting_id: int):
     endpoint's real value is overriding AIY's own gating call on something
     it silently dropped (e.g. tagging a real squirrel as 'background').
 
-    Idempotent by design: only actually queues something whose
-    species_id_status is currently 'not_queued'. Anything already
-    'queued'/'classified'/'confirmed' is left untouched - per explicit
-    instruction, a sighting shouldn't get reprocessed by SpeciesNet just
-    because it passed through Manage again (e.g. after being sent back to
-    review from Gallery), only because someone intentionally resent it or
-    it's genuinely never been queued before. Sending back to review changes
-    review_status only; it was never supposed to reset species_id_status,
-    and this endpoint being non-idempotent was what let that combination
-    silently cause duplicate SpeciesNet runs on 2026-09-11."""
+    Idempotent, but only against mid-flight states. Only 'queued' and
+    'classified' are skipped - a sighting that's still on its first pass
+    through the pipeline (auto-queued, or classified but not yet reviewed
+    by a human) shouldn't get silently reset just because this endpoint
+    got called again, which is what caused duplicate SpeciesNet runs on
+    2026-09-11. 'confirmed' is deliberately NOT skipped: per the actual
+    instruction, "moved to the gallery" was named as one of the two valid
+    reasons a sighting should be allowed to go through again - a confirmed
+    sighting only ends up back in Manage's pending_review list because a
+    human explicitly sent it back from Gallery, which IS the intentional
+    resend, not an accident to guard against. An earlier version of this
+    endpoint treated 'confirmed' as terminal and blocked this legitimate
+    case too - fixed 2026-09-12 after it silently broke exactly this
+    workflow during a database cleanup pass."""
     from main import DB_PATH
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -93,7 +97,7 @@ async def queue_species_id(sighting_id: int):
         conn.close()
         return {"error": "Sighting not found"}
     current_status = row[0]
-    if current_status != "not_queued":
+    if current_status in ("queued", "classified"):
         conn.close()
         return {"id": sighting_id, "species_id_status": current_status, "already_in_pipeline": True}
 
