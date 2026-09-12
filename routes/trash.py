@@ -84,7 +84,7 @@ async def trash_page():
             let speciesLabels = {};
 
             async function loadSpecies() {
-                const res = await fetch('/api/species-list');
+                const res = await fetch('/api/species-list?review_status=rejected');
                 const data = await res.json();
                 const sel = document.getElementById('species');
                 data.species.forEach(sp => {

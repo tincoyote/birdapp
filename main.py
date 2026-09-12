@@ -259,7 +259,8 @@ def classify_aiy(image_path):
         return None, None
 
 
-def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat, is_species_level_inat=True):
+def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat,
+                       is_species_level_inat=True, higher_level_match=None):
     """Determine classifier_agreement state from two classifiers' output.
     Handles the case where one classifier hasn't run / isn't wired in yet -
     that's 'one_classifier', distinct from 'pending' (both still running).
@@ -267,10 +268,19 @@ def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat
     is_species_level_inat: whether species_inat is an actual species-level ID
     (e.g. a SpeciesNet result with prediction_source=='classifier') rather
     than a rollup to a higher taxonomic level or a bare detector label
-    ('bird', 'corvidae family', 'vehicle', 'no cv result'). A rollup isn't
-    really disagreeing with a specific species guess - it's declining to
-    commit - so it gets its own 'inconclusive' state instead of being lumped
-    in with a genuine species-level mismatch."""
+    ('bird', 'corvidae family', 'vehicle', 'no cv result').
+
+    higher_level_match: only meaningful when is_species_level_inat is False.
+    True/False/None from checking whether AIY's species genuinely belongs to
+    whichever higher taxon SpeciesNet named (computed client-side in
+    run_second_opinion.py against SpeciesNet's own bundled taxonomy
+    reference, since that file only exists on the laptop, not in this
+    container). A rollup with a genuine taxonomic match ("corvidae family"
+    when AIY said a real jay species) is real partial agreement, not
+    uncertainty - conflating the two was the original motivation for adding
+    'inconclusive' in the first place, and this closes the gap that first
+    fix left: a rollup that DOES match AIY's species was still landing in
+    the same bucket as one with no taxonomic content at all."""
     if species_aiy and not species_inat:
         return 'one_classifier'
     if species_inat and not species_aiy:
@@ -279,6 +289,10 @@ def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat
         return 'pending'
 
     if not is_species_level_inat:
+        if higher_level_match is True:
+            return 'agreed_higher_level'
+        if higher_level_match is False:
+            return 'disagreed'
         return 'inconclusive'
 
     if species_aiy.lower() == species_inat.lower():
@@ -619,17 +633,33 @@ async def stats(username: str = Depends(verify_admin_auth)):
 
 
 @app.get("/api/species-list")
-async def species_list(username: str = Depends(verify_admin_auth)):
+async def species_list(review_status: str = Query(None), username: str = Depends(verify_admin_auth)):
+    """Shared by Gallery, Manage, and Trash - each needs a species list
+    scoped to what it actually shows (approved/pending_review/rejected
+    respectively), not every non-trashed sighting regardless of state.
+    review_status, when passed, replaces the is_trashed check entirely
+    (same pattern /api/sightings already uses) rather than combining with
+    it - is_trashed=0 alone doesn't mean pending_review, since rejecting a
+    photo never sets is_trashed (a known legacy quirk from the old
+    is_trashed/review_status dual system). Without this, Gallery's species
+    filter was pulling in species that only existed in Manage's pending
+    queue or Trash, never actually approved - fixed 2026-09-12."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
+    if review_status:
+        where = "review_status = ?"
+        params = (review_status, review_status)
+    else:
+        where = "is_trashed = 0"
+        params = ()
+    cursor.execute(f"""
         SELECT DISTINCT species_confirmed FROM sightings
-        WHERE is_trashed=0 AND species_confirmed IS NOT NULL
+        WHERE {where} AND species_confirmed IS NOT NULL
         UNION
         SELECT DISTINCT species_aiy FROM sightings
-        WHERE is_trashed=0 AND species_aiy IS NOT NULL AND species_aiy != 'background'
+        WHERE {where} AND species_aiy IS NOT NULL AND species_aiy != 'background'
         ORDER BY 1
-    """)
+    """, params)
     species = [row[0] for row in cursor.fetchall()]
     conn.close()
     # value = the actual DB value filters compare against (scientific name, or

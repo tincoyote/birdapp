@@ -87,7 +87,7 @@ async def gallery_page():
             let speciesLabels = {};
 
             async function loadSpecies() {
-                const res = await fetch('/api/species-list');
+                const res = await fetch('/api/species-list?review_status=approved');
                 const data = await res.json();
                 const sel = document.getElementById('species');
                 data.species.forEach(sp => {
@@ -100,7 +100,25 @@ async def gallery_page():
             }
 
             function commonName(s) {
-                return s.species_confirmed || s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
+                if (s.species_confirmed) return s.species_confirmed;
+                const common = s.common_name || speciesLabels[s.species_aiy] || s.species_aiy || 'Unknown';
+                const latin = s.species_aiy;
+                // "Common Name (Latin name)" - matches the convention already
+                // used for manually-typed overrides in Species Queue. Skip
+                // the parenthetical when there's no real Latin name to add
+                // (common name lookup failed and fell back to being the
+                // same string as species_aiy already).
+                return (latin && common !== latin) ? `${common} (${latin})` : common;
+            }
+
+            function localTime(isoTimestamp) {
+                // main.py stores datetime.now().isoformat() - naive local
+                // time, no UTC/'Z' suffix. A date-time string with no
+                // timezone designator is parsed as local time per spec, so
+                // this needs no conversion - it's already correct as long
+                // as the viewer is in the same timezone as the NAS, which
+                // for a single-family home camera is the normal case.
+                return new Date(isoTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             }
 
             async function applyFilters() {
@@ -198,7 +216,7 @@ async def gallery_page():
                 document.getElementById('lightboxImg').src = `/images/${s.filename}`;
                 document.getElementById('lightboxCommon').textContent = commonName(s);
                 document.getElementById('lightboxMeta').textContent =
-                    `${s.species_aiy || 'Unknown'} - ${(s.confidence_aiy * 100).toFixed(0)}% - ${s.timestamp.split('T')[0]} (${lightboxIndex + 1} of ${flatList.length})`;
+                    `${(s.confidence_aiy * 100).toFixed(0)}% - ${s.timestamp.split('T')[0]} ${localTime(s.timestamp)} (${lightboxIndex + 1} of ${flatList.length})`;
             }
 
             function navLightbox(delta) {

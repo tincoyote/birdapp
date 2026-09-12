@@ -130,7 +130,7 @@ async def manage_page():
             let speciesLabels = {};
 
             async function loadSpecies() {
-                const res = await fetch('/api/species-list');
+                const res = await fetch('/api/species-list?review_status=pending_review');
                 const data = await res.json();
                 const sel = document.getElementById('species');
                 data.species.forEach(sp => {
@@ -251,8 +251,11 @@ async def manage_page():
                     // are deliberately independent fields.
                     const res = await fetch(`/api/sightings/${s.id}/queue-species-id`, { method: 'POST' });
                     const data = await res.json();
-                    if (data.already_in_pipeline) showInfo(`Already in the pipeline (${data.species_id_status})`);
-                    allSightings.splice(previewIndex, 1);
+                    if (data.already_in_pipeline) {
+                        showInfo(`Already in the pipeline (${data.species_id_status}) - nothing changed`);
+                    } else {
+                        allSightings.splice(previewIndex, 1);
+                    }
                 } else if (action === 'reject') {
                     await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) });
                     allSightings.splice(previewIndex, 1);

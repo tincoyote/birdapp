@@ -9,6 +9,7 @@ router = APIRouter()
 AGREEMENT_STYLES = {
     "agreed": ("#d4edda", "#155724", "Agreed"),
     "low_confidence": ("#fff3cd", "#856404", "Agreed (low confidence)"),
+    "agreed_higher_level": ("#d1ecf1", "#0c5460", "Agreed (family/order)"),
     "inconclusive": ("#e2e3e5", "#383d41", "Inconclusive"),
     "disagreed": ("#f8d7da", "#721c24", "Disagreed"),
     "one_classifier": ("#e2e3e5", "#383d41", "One opinion only"),
@@ -163,6 +164,16 @@ async def species_queue_page():
                 return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             }}
 
+            function formatWithLatin(common, latin) {{
+                // "Common Name (Latin name)" - matches the convention
+                // already used for manually-typed overrides. species_inat
+                // is only a real Latin binomial when SpeciesNet resolved to
+                // species level; for a rollup (e.g. "corvidae family") it's
+                // identical to the label itself, so skip the parenthetical
+                // rather than showing something like "bird (bird)".
+                return (latin && common !== latin) ? `${{common}} (${{latin}})` : common;
+            }}
+
             function openLightbox(idx) {{
                 lightboxIndex = idx;
                 renderLightbox();
@@ -196,8 +207,8 @@ async def species_queue_page():
                         </div>
                         <span class="badge" style="background:${{st.bg}}; color:${{st.fg}};">${{st.text}}</span>
                         <div class="pick-row">
-                            <button class="btn-success" data-id="${{r.id}}" data-label="${{escAttr(r.aiy_label)}}" onclick="pickBtn(this)">Post as AIY</button>
-                            <button class="btn-primary" data-id="${{r.id}}" data-label="${{escAttr(r.inat_label)}}" onclick="pickBtn(this)">Post as SpeciesNet</button>
+                            <button class="btn-success" data-id="${{r.id}}" data-label="${{escAttr(formatWithLatin(r.aiy_label, r.species_aiy))}}" onclick="pickBtn(this)">Post as AIY</button>
+                            <button class="btn-primary" data-id="${{r.id}}" data-label="${{escAttr(formatWithLatin(r.inat_label, r.species_inat))}}" onclick="pickBtn(this)">Post as SpeciesNet</button>
                         </div>
                         <div class="override-row">
                             <input type="text" id="lbOverride" placeholder="Something else...">

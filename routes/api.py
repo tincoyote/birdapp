@@ -173,6 +173,7 @@ async def second_opinion(sighting_id: int, body: dict):
     species_inat = body.get("species_inat")
     confidence_inat = body.get("confidence_inat")
     is_species_level_inat = body.get("is_species_level_inat", True)
+    higher_level_match = body.get("higher_level_match")
     if species_inat is None:
         return {"error": "species_inat is required"}
 
@@ -185,7 +186,10 @@ async def second_opinion(sighting_id: int, body: dict):
         return {"error": "Sighting not found"}
 
     species_aiy, confidence_aiy = result
-    agreement = compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat, is_species_level_inat)
+    agreement = compute_agreement(
+        species_aiy, confidence_aiy, species_inat, confidence_inat,
+        is_species_level_inat, higher_level_match
+    )
 
     cursor.execute(
         """UPDATE sightings

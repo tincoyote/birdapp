@@ -8,8 +8,8 @@ NAV_HTML = """
 </style>
 <div class="bird-nav">
     <span class="brand">🐦</span>
-    <a href="/manage" id="nav-manage">Manage</a>
     <a href="/gallery" id="nav-gallery">Gallery</a>
+    <a href="/manage" id="nav-manage">Manage</a>
     <a href="/species-queue" id="nav-species-queue">Species Queue</a>
     <a href="/trash" id="nav-trash">Trash</a>
     <a href="/api/stats" id="nav-stats">Stats</a>
