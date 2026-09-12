@@ -72,17 +72,38 @@ async def queue_species_id(sighting_id: int):
     Most photos are already auto-queued by the gating logic in
     classify_and_save() before a human ever sees them in Manage - this
     endpoint's real value is overriding AIY's own gating call on something
-    it silently dropped (e.g. tagging a real squirrel as 'background')."""
+    it silently dropped (e.g. tagging a real squirrel as 'background').
+
+    Idempotent by design: only actually queues something whose
+    species_id_status is currently 'not_queued'. Anything already
+    'queued'/'classified'/'confirmed' is left untouched - per explicit
+    instruction, a sighting shouldn't get reprocessed by SpeciesNet just
+    because it passed through Manage again (e.g. after being sent back to
+    review from Gallery), only because someone intentionally resent it or
+    it's genuinely never been queued before. Sending back to review changes
+    review_status only; it was never supposed to reset species_id_status,
+    and this endpoint being non-idempotent was what let that combination
+    silently cause duplicate SpeciesNet runs on 2026-09-11."""
     from main import DB_PATH
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    cursor.execute("SELECT species_id_status FROM sightings WHERE id = ?", (sighting_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Sighting not found"}
+    current_status = row[0]
+    if current_status != "not_queued":
+        conn.close()
+        return {"id": sighting_id, "species_id_status": current_status, "already_in_pipeline": True}
+
     cursor.execute(
         "UPDATE sightings SET needs_species_id = 1, species_id_status = 'queued' WHERE id = ?",
         (sighting_id,)
     )
     conn.commit()
     conn.close()
-    return {"id": sighting_id, "species_id_status": "queued"}
+    return {"id": sighting_id, "species_id_status": "queued", "already_in_pipeline": False}
 
 
 @router.post("/api/sightings/{sighting_id}/confirm-species")

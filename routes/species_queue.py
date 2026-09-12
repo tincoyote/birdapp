@@ -153,6 +153,16 @@ async def species_queue_page():
                 return d.innerHTML;
             }}
 
+            function escAttr(s) {{
+                // esc() above is safe for TEXT content but does NOT escape
+                // literal " characters - innerHTML only escapes &, <, > in
+                // text nodes, since quotes aren't special there. Embedding
+                // into a double-quoted HTML attribute needs " escaped too,
+                // or the exact bug that broke the pick buttons happens
+                // again the moment any label contains one.
+                return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            }}
+
             function openLightbox(idx) {{
                 lightboxIndex = idx;
                 renderLightbox();
@@ -186,8 +196,8 @@ async def species_queue_page():
                         </div>
                         <span class="badge" style="background:${{st.bg}}; color:${{st.fg}};">${{st.text}}</span>
                         <div class="pick-row">
-                            <button class="btn-success" onclick="pick(${{r.id}}, ${{JSON.stringify(r.aiy_label)}})">Post as AIY</button>
-                            <button class="btn-primary" onclick="pick(${{r.id}}, ${{JSON.stringify(r.inat_label)}})">Post as SpeciesNet</button>
+                            <button class="btn-success" data-id="${{r.id}}" data-label="${{escAttr(r.aiy_label)}}" onclick="pickBtn(this)">Post as AIY</button>
+                            <button class="btn-primary" data-id="${{r.id}}" data-label="${{escAttr(r.inat_label)}}" onclick="pickBtn(this)">Post as SpeciesNet</button>
                         </div>
                         <div class="override-row">
                             <input type="text" id="lbOverride" placeholder="Something else...">
@@ -216,6 +226,10 @@ async def species_queue_page():
                 if (lightboxIndex >= queueData.length) lightboxIndex = queueData.length - 1;
                 else if (idx <= lightboxIndex && lightboxIndex > 0) lightboxIndex -= 1;
                 renderLightbox();
+            }}
+
+            function pickBtn(btn) {{
+                pick(parseInt(btn.dataset.id, 10), btn.dataset.label);
             }}
 
             async function pick(id, label) {{

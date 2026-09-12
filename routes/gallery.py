@@ -212,8 +212,13 @@ async def gallery_page():
                 const s = flatList[lightboxIndex];
                 await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'pending_review'}) });
                 allSightings = allSightings.filter(x => x.id !== s.id);
-                closeLightbox();
                 renderGallery();
+                // Stay open on the next photo instead of closing - flatList
+                // rebuilds in the same order with one fewer item, so the
+                // photo that was "next" now sits at this same index.
+                if (flatList.length === 0) { closeLightbox(); return; }
+                if (lightboxIndex >= flatList.length) lightboxIndex = flatList.length - 1;
+                renderLightbox();
             }
 
             document.addEventListener('keydown', e => {

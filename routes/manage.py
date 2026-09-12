@@ -249,7 +249,9 @@ async def manage_page():
                     // session; a fresh page load will show it again, which
                     // is correct given review_status and species_id_status
                     // are deliberately independent fields.
-                    await fetch(`/api/sightings/${s.id}/queue-species-id`, { method: 'POST' });
+                    const res = await fetch(`/api/sightings/${s.id}/queue-species-id`, { method: 'POST' });
+                    const data = await res.json();
+                    if (data.already_in_pipeline) showInfo(`Already in the pipeline (${data.species_id_status})`);
                     allSightings.splice(previewIndex, 1);
                 } else if (action === 'reject') {
                     await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) });
@@ -300,13 +302,18 @@ async def manage_page():
             async function acceptSelected() {
                 if (!confirm(`Send ${selectedIds.size} to species queue?`)) return;
                 const ids = Array.from(selectedIds);
+                let newlyQueued = 0, alreadyInPipeline = 0;
                 setBusy(true, `Sending 0 of ${ids.length}...`);
                 for (let i = 0; i < ids.length; i++) {
-                    await fetch(`/api/sightings/${ids[i]}/queue-species-id`, { method: 'POST' });
+                    const res = await fetch(`/api/sightings/${ids[i]}/queue-species-id`, { method: 'POST' });
+                    const data = await res.json();
+                    if (data.already_in_pipeline) alreadyInPipeline++; else newlyQueued++;
                     setBusy(true, `Sending ${i + 1} of ${ids.length}...`);
                 }
                 setBusy(false);
-                showInfo(`Sent ${ids.length} to species queue`);
+                showInfo(alreadyInPipeline > 0
+                    ? `Queued ${newlyQueued}, ${alreadyInPipeline} already in the pipeline (skipped)`
+                    : `Sent ${newlyQueued} to species queue`);
                 selectedIds.clear();
                 await applyFilters();
             }
