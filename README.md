@@ -58,7 +58,8 @@ runs off-box (a laptop, not the NAS) in its own Python venv, and talks to
 birdapp exclusively over its HTTP API - it never opens `birds.db` directly.
 This matters: SQLite's file locking is not reliable over a network share,
 and keeping the container as the sole writer avoids that entirely. See
-`run_second_opinion.py` and `HISTORY.md` for why this shape was chosen.
+`speciesnet-runner/run_second_opinion.py`, [SETUP.md](SETUP.md), and
+`HISTORY.md` for why this shape was chosen and how to set it up.
 
 ## Repo layout
 
@@ -68,6 +69,9 @@ and keeping the container as the sole writer avoids that entirely. See
   `api.py` (shared JSON endpoints), `nav.py` (shared admin nav bar)
 - `migration.py` - idempotent schema migrations, run on every startup
 - `camera_config.json` - shared crop-box config (see Architecture above)
+- `speciesnet-runner/` - the standalone SpeciesNet script, meant to be
+  copied out to its own separate folder and run independently - see
+  SETUP.md, not run in place here
 - `common_names.csv` - scientific-name &rarr; common-name lookup for AIY's
   species checklist (birds only - does not cover non-bird SpeciesNet
   detections)
@@ -80,6 +84,7 @@ framework - server-rendered HTML with fetch-based actions).
 
 ## Links
 
+- [SETUP.md](SETUP.md) - how to actually run this yourself
 - [Wyze Cam v3](https://www.wyze.com/products/wyze-cam-v3) - camera hardware
 - [Thingino](https://github.com/themactep/thingino-firmware) - firmware
 - [Synology](https://www.synology.com/) - NAS running the server
