@@ -8,6 +8,15 @@ This README covers the **current** architecture only. For the story of how
 it got here - abandoned camera builds, power-system failures, and the
 lessons learned along the way - see [HISTORY.md](HISTORY.md).
 
+**Birdapp itself doesn't require Thingino, or even a Wyze camera.** The
+only actual requirement is something that can POST a JPEG to `/webhook` on
+motion - Thingino is just what this particular deployment happens to use.
+Any camera with its own motion-triggered upload/webhook feature, a
+Raspberry Pi with a camera module, a Home Assistant automation, or
+literally anything else capable of an HTTP file upload would work exactly
+the same way. See `/webhook` in `main.py` - it only ever reads a multipart
+`image` field, nothing Thingino- or Wyze-specific at all.
+
 ## How it works
 
 1. The camera detects motion and POSTs a photo to `/webhook`.
@@ -31,7 +40,7 @@ columns - approving and getting a second opinion are separate questions.
 
 ## Architecture
 
-**Camera**: Wyze Cam v3, [Thingino ](https://github.com/themactep/thingino-firmware)firmware, `prudynt` for motion detection/capture.
+**Camera**: this deployment uses a Wyze Cam v3 running [Thingino ](https://github.com/themactep/thingino-firmware)firmware with `prudynt` for motion detection/capture - but as noted above, any motion-triggered image source that can POST to `/webhook` works.
 
 **Power**: solar panel + LiPo battery → Adafruit bq24074 (solar/USB/DC charger with power path management) → Adafruit PowerBoost 500 → camera. Camera framing (classifier crop, public display crop) is tracked in
 `camera_config.json`, checked into git since these are calibration values,
@@ -76,3 +85,9 @@ framework - server-rendered HTML with fetch-based actions).
 - [Synology](https://www.synology.com/) - NAS running the server
 - [SpeciesNet](https://github.com/google/cameratrapai) - second classifier
 - [HISTORY.md](HISTORY.md) - project history and lessons learned
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE) - free to use, modify, and share
+for personal, hobby, educational, or nonprofit/government purposes.
+Commercial use requires reaching out first.
