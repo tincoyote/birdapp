@@ -207,8 +207,8 @@ async def species_queue_page():
                         </div>
                         <span class="badge" style="background:${{st.bg}}; color:${{st.fg}};">${{st.text}}</span>
                         <div class="pick-row">
-                            <button class="btn-success" data-id="${{r.id}}" data-label="${{escAttr(formatWithLatin(r.aiy_label, r.species_aiy))}}" onclick="pickBtn(this)">Post as AIY</button>
-                            <button class="btn-primary" data-id="${{r.id}}" data-label="${{escAttr(formatWithLatin(r.inat_label, r.species_inat))}}" onclick="pickBtn(this)">Post as SpeciesNet</button>
+                            <button class="btn-success" data-id="${{r.id}}" data-source="aiy" data-label="${{escAttr(formatWithLatin(r.aiy_label, r.species_aiy))}}" onclick="pickBtn(this)">Post as AIY</button>
+                            <button class="btn-primary" data-id="${{r.id}}" data-source="sn" data-label="${{escAttr(formatWithLatin(r.inat_label, r.species_inat))}}" onclick="pickBtn(this)">Post as SpeciesNet</button>
                         </div>
                         <div class="override-row">
                             <input type="text" id="lbOverride" placeholder="Something else...">
@@ -247,14 +247,14 @@ async def species_queue_page():
             }}
 
             function pickBtn(btn) {{
-                pick(parseInt(btn.dataset.id, 10), btn.dataset.label);
+                pick(parseInt(btn.dataset.id, 10), btn.dataset.label, btn.dataset.source);
             }}
 
-            async function pick(id, label) {{
+            async function pick(id, label, source) {{
                 const res = await fetch(`/api/sightings/${{id}}/confirm-species`, {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{species_confirmed: label}})
+                    body: JSON.stringify({{species_confirmed: label, species_confirmed_source: source}})
                 }});
                 if (!res.ok) {{ showInfo('Something went wrong - try again.'); return; }}
                 showInfo(`Posted to Gallery: ${{label}}`);
@@ -265,7 +265,7 @@ async def species_queue_page():
                 const input = document.getElementById('lbOverride');
                 const value = input.value.trim();
                 if (!value) {{ input.focus(); return; }}
-                pick(id, value);
+                pick(id, value, 'custom');
             }}
 
             async function deleteItem(id) {{

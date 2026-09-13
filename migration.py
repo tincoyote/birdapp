@@ -110,10 +110,33 @@ def migrate_v3_to_v4(db_path):
     conn.close()
 
 
+def migrate_v4_to_v5(db_path):
+    """Add species_confirmed_source: tracks whether a confirmed species came
+    from clicking 'Post as AIY' ('aiy'), 'Post as SpeciesNet' ('sn'), or a
+    manually-typed override ('custom'). species_confirmed itself doesn't
+    distinguish these - a button pick and a hand-typed correction look
+    identical once saved - so there was no way to tell them apart after the
+    fact. NULL for pre-existing confirmed rows since the real source was
+    never recorded and shouldn't be guessed at retroactively.
+    Same idempotent PRAGMA table_info pattern as prior migrations."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("PRAGMA table_info(sightings)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    if "species_confirmed_source" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN species_confirmed_source TEXT")
+
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else "/app/data/birds.db"
     migrate_v1_to_v2(path)
     migrate_v2_to_v3(path)
     migrate_v3_to_v4(path)
+    migrate_v4_to_v5(path)
     print(f"Migration complete: {path}")

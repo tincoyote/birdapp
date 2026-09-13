@@ -28,16 +28,28 @@ async def public_species_list():
     """Species that actually appear in APPROVED sightings only. Deliberately
     not reusing the admin /api/species-list, which also surfaces species from
     pending/rejected rows - the public page must never hint at the existence
-    of photos that weren't approved."""
+    of photos that weren't approved.
+
+    value and label are now the SAME computed string - COALESCE(species_
+    confirmed, common_name, species_aiy) - and /api/public/sightings' species
+    filter below matches against that identical expression. They used to be
+    two different columns (label from species_confirmed, value from raw
+    species_aiy), which broke completely once a confirmed correction
+    diverged from AIY's original guess - which is the normal case for
+    anything that went through Species Queue, not an edge case. Clicking
+    "Black Phoebe" in the dropdown was silently showing Northern Flicker
+    photos because Black Phoebe's confirmed label happened to be paired
+    with some other row's leftover species_aiy value. Fixed 2026-09-13."""
     conn = sqlite3.connect(_get_db_path())
     c = conn.cursor()
     c.execute("""
-        SELECT DISTINCT COALESCE(species_confirmed, common_name, species_aiy) AS label, species_aiy
+        SELECT DISTINCT COALESCE(species_confirmed, common_name, species_aiy) AS effective_species
         FROM sightings
-        WHERE review_status = 'approved' AND species_aiy IS NOT NULL
-        ORDER BY label
+        WHERE review_status = 'approved'
+              AND COALESCE(species_confirmed, common_name, species_aiy) IS NOT NULL
+        ORDER BY effective_species
     """)
-    species = [{"value": r[1], "label": r[0] or r[1]} for r in c.fetchall()]
+    species = [{"value": r[0], "label": r[0]} for r in c.fetchall()]
     conn.close()
     return {"species": species}
 
@@ -71,7 +83,7 @@ async def public_sightings(
         sql.append("AND date(timestamp) <= date(?)")
         params.append(date_to)
     if species:
-        sql.append("AND species_aiy = ?")
+        sql.append("AND COALESCE(species_confirmed, common_name, species_aiy) = ?")
         params.append(species)
 
     sql.append("ORDER BY timestamp DESC LIMIT 300")
@@ -181,7 +193,7 @@ FAMILY_HTML += """
 <body>
     <div class="container">
         <h1>Birdbath Visitors</h1>
-        <div class="tagline">Recent guests at the backyard birdbath</div>
+        <div class="tagline">Recent guests at the backyard birdbath &middot; <a href="/about" style="color:#007bff;">About this project</a></div>
 
         <div class="filters">
             <div class="filter-group"><label>Date From</label><input type="date" id="dateFrom"></div>
@@ -407,3 +419,91 @@ async def family_page():
     deliberately larger than the admin gallery's, with a size selector, since
     the intended audience includes older family members."""
     return HTMLResponse(FAMILY_HTML)
+
+
+# Same visual style as FAMILY_HTML (font, colors, container/card look) for
+# consistency, but deliberately much simpler markup - this is a static page,
+# no filters, no JS, no data fetching. Content is intentionally current-
+# state-only and equipment is described in plain, non-technical terms - the
+# full history and technical specifics live in the repo's README.md and
+# HISTORY.md instead, linked from here for anyone who wants to go deeper.
+ABOUT_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>About - Birdbath Visitors</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+               background: #f5f5f5; padding: 20px; font-size: 17px; color: #222; line-height: 1.6; }
+        .container { max-width: 720px; margin: 0 auto; background: white;
+                     border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 32px; }
+        h1 { margin-bottom: 4px; font-size: 30px; color: #2c3e50; }
+        .tagline { color: #777; margin-bottom: 28px; font-size: 16px; }
+        h2 { font-size: 20px; color: #2c3e50; margin: 28px 0 10px; }
+        p { margin-bottom: 12px; }
+        ol, ul { margin: 0 0 12px 22px; }
+        li { margin-bottom: 6px; }
+        a { color: #007bff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .links { list-style: none; margin-left: 0; }
+        .links li { margin-bottom: 10px; }
+        .back { display: inline-block; margin-top: 28px; }
+    </style>
+</head>
+"""
+
+ABOUT_HTML += """
+<body>
+    <div class="container">
+        <h1>About This Project</h1>
+        <div class="tagline">The short version - what you're looking at and how it works</div>
+
+        <h2>What is this?</h2>
+        <p>A solar-powered camera watches our backyard birdbath around the clock.
+        When a visitor stops by, AI takes a look and guesses what kind of bird
+        (or occasional squirrel, or cat) it is. Every photo gets checked by an
+        actual person before it shows up here - so what you're seeing has been
+        reviewed, not just left entirely to the robots.</p>
+
+        <h2>How it works</h2>
+        <ol>
+            <li>The camera watches the birdbath and waits for motion.</li>
+            <li>When something moves, it takes a photo and sends it in.</li>
+            <li>One AI model takes a first guess at the species.</li>
+            <li>A second, independent AI double-checks that guess.</li>
+            <li>A person compares both opinions and confirms the final answer.</li>
+            <li>Confirmed photos show up right here.</li>
+        </ol>
+
+        <h2>The equipment</h2>
+        <p>A small weatherproof camera sits outside, running off a solar panel
+        and battery so it never needs a cord. All the photo storage and AI
+        processing happens on a small home server tucked away inside.</p>
+
+        <h2>Learn more</h2>
+        <ul class="links">
+            <li>&#128247; <a href="https://www.wyze.com/products/wyze-cam-v3" target="_blank" rel="noopener">Wyze Cam v3</a> - the camera hardware</li>
+            <li>&#128295; <a href="https://github.com/themactep/thingino-firmware" target="_blank" rel="noopener">Thingino</a> - the open-source firmware it runs</li>
+            <li>&#128190; <a href="https://www.synology.com/" target="_blank" rel="noopener">Synology</a> - the home server everything runs on</li>
+            <li>&#128187; <a href="https://github.com/tincoyote/birdapp" target="_blank" rel="noopener">This project on GitHub</a> - all the code, for the curious</li>
+            <li>&#128218; <a href="https://github.com/tincoyote/birdapp/blob/main/HISTORY.md" target="_blank" rel="noopener">Project history &amp; lessons learned</a> - the full story, for anyone attempting something similar</li>
+        </ul>
+
+        <a class="back" href="/family">&larr; Back to the photos</a>
+    </div>
+</body>
+</html>
+"""
+
+
+@router.get("/about")
+async def about_page():
+    """Public, unauthenticated, static. Deliberately current-state-only and
+    non-technical - equipment described in plain terms, no chip/board names,
+    no history of what got tried and abandoned along the way. That detail
+    lives in README.md and HISTORY.md in the repo instead, linked from here
+    for anyone who wants to go deeper than a casual family visitor needs."""
+    return HTMLResponse(ABOUT_HTML)

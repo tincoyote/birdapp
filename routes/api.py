@@ -123,11 +123,17 @@ async def confirm_species(sighting_id: int, body: dict):
     human has picked a winning species here. Also stamps review_updated_at
     to match what the existing PATCH /review-status endpoint does, so
     Gallery's 'recently changed' sort still behaves consistently regardless
-    of which endpoint actually approved a given photo."""
+    of which endpoint actually approved a given photo.
+
+    species_confirmed_source ('aiy'/'sn'/'custom') records which button (or
+    the manual override) produced the value, since species_confirmed itself
+    is just a string - a button pick and a hand-typed correction are
+    otherwise indistinguishable once saved."""
     from datetime import datetime
     from main import DB_PATH
 
     species_confirmed = body.get("species_confirmed")
+    species_confirmed_source = body.get("species_confirmed_source")
     if not species_confirmed:
         return {"error": "species_confirmed is required"}
 
@@ -140,15 +146,17 @@ async def confirm_species(sighting_id: int, body: dict):
 
     cursor.execute(
         """UPDATE sightings
-           SET species_confirmed = ?, species_id_status = 'confirmed',
+           SET species_confirmed = ?, species_confirmed_source = ?,
+               species_id_status = 'confirmed',
                review_status = 'approved', review_updated_at = ?
            WHERE id = ?""",
-        (species_confirmed, datetime.now().isoformat(), sighting_id)
+        (species_confirmed, species_confirmed_source, datetime.now().isoformat(), sighting_id)
     )
     conn.commit()
     conn.close()
     return {
         "id": sighting_id, "species_confirmed": species_confirmed,
+        "species_confirmed_source": species_confirmed_source,
         "species_id_status": "confirmed", "review_status": "approved"
     }
 
