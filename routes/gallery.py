@@ -7,7 +7,9 @@ router = APIRouter()
 @router.get("/gallery")
 async def gallery_page():
     """Gallery: approved sightings only. Browse by date/species, group either
-    way, preview with next/prev navigation, send back to review."""
+    way, preview with next/prev navigation, resend to classifier (which also
+    sends the photo back to Manage for a fresh look - see /resend-classifier
+    in routes/api.py)."""
     html = """
     <!DOCTYPE html>
     <html>
@@ -38,8 +40,8 @@ async def gallery_page():
             .lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); font-size: 28px; padding: 14px 18px; background: rgba(255,255,255,0.15); color: white; border: none; border-radius: 4px; cursor: pointer; }
             .lightbox img { max-width: 90%; max-height: 75%; border-radius: 4px; }
             .lightbox-info { color: white; margin-top: 15px; text-align: center; }
-            button.send-review { background: #ffc107; color: black; margin-top: 12px; }
-            button.send-review:hover { background: #e0a800; }
+            button.resend-classifier { background: #ffc107; color: black; margin-top: 12px; }
+            button.resend-classifier:hover { background: #e0a800; }
         </style>
     </head>
     <body>
@@ -78,7 +80,7 @@ async def gallery_page():
             <div class="lightbox-info">
                 <div id="lightboxCommon" style="font-size:20px; font-weight:600;"></div>
                 <div id="lightboxMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
-                <button class="send-review" onclick="sendBackToReview()">Send Back to Review</button>
+                <button class="resend-classifier" onclick="resendToClassifier()">Resend to Classifier</button>
             </div>
         </div>
 
@@ -225,10 +227,14 @@ async def gallery_page():
                 renderLightbox();
             }
 
-            async function sendBackToReview() {
+            async function resendToClassifier() {
                 if (lightboxIndex < 0) return;
                 const s = flatList[lightboxIndex];
-                await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'pending_review'}) });
+                // Re-runs AIY AND resets review_status/species_id_status back
+                // to Manage's fresh, not-yet-screened state in one call - see
+                // /resend-classifier's docstring in routes/api.py. This is now
+                // the only way a Gallery photo gets back to Manage.
+                await fetch(`/api/sightings/${s.id}/resend-classifier`, { method: 'POST' });
                 allSightings = allSightings.filter(x => x.id !== s.id);
                 renderGallery();
                 // Stay open on the next photo instead of closing - flatList

@@ -123,7 +123,8 @@ async def species_queue_page():
             .override-row {{ display: flex; gap: 6px; margin-bottom: 8px; }}
             .override-row input {{ flex: 1; min-width: 0; padding: 7px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }}
             .waiting {{ font-size: 13px; color: #ccc; font-style: italic; padding: 6px 0; margin-bottom: 8px; }}
-            .del-row button {{ width: 100%; }}
+            .del-row {{ display: flex; gap: 6px; }}
+            .del-row button {{ flex: 1; }}
         </style>
     </head>
     <body>
@@ -225,7 +226,10 @@ async def species_queue_page():
                         <div class="waiting">Waiting for second opinion</div>
                     `;
                 }}
-                panel += `<div class="del-row"><button class="btn-danger" onclick="deleteItem(${{r.id}})">Delete</button></div>`;
+                panel += `<div class="del-row">
+                    <button class="btn-secondary" onclick="resendToClassifier(${{r.id}})">Resend to Classifier</button>
+                    <button class="btn-danger" onclick="deleteItem(${{r.id}})">Delete</button>
+                </div>`;
                 document.getElementById('lbPanel').innerHTML = panel;
             }}
 
@@ -277,6 +281,12 @@ async def species_queue_page():
                     body: JSON.stringify({{review_status: 'rejected'}})
                 }});
                 showInfo('Sent to trash');
+                removeItem(id);
+            }}
+
+            async function resendToClassifier(id) {{
+                await fetch(`/api/sightings/${{id}}/resend-classifier`, {{ method: 'POST' }});
+                showInfo('Resent to classifier - back in Manage for a fresh look');
                 removeItem(id);
             }}
 

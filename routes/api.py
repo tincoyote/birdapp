@@ -25,9 +25,18 @@ async def update_review_status(sighting_id: int, body: dict):
 
 @router.post("/api/sightings/{sighting_id}/resend-classifier")
 async def resend_classifier(sighting_id: int):
-    """Re-run the AIY classifier on a single sighting. Updates species/confidence
-    in place, stays in whatever review_status it was already in. Increments
-    classification_attempts each time this is called."""
+    """Re-run the AIY classifier on a single sighting, AND send it back to
+    Manage's initial-screening state - review_status='pending_review',
+    species_id_status='not_queued', needs_species_id=0 - regardless of what
+    state it was in before. This is deliberate: resending IS how a sighting
+    gets back to Manage, from anywhere in the pipeline (Manage itself,
+    Species Queue, or Gallery), rather than a separate "send back" action.
+    For a sighting already in Manage (already pending_review/not_queued,
+    which is everything Manage shows now that it filters on
+    species_id_status - see routes/manage.py) this reset is a no-op on
+    those three fields; calling it from Species Queue or Gallery is what
+    actually changes them. Increments classification_attempts each time
+    this is called, from any page."""
     from main import DB_PATH, DATA_DIR, classify_aiy, compute_agreement, common_names
 
     conn = sqlite3.connect(DB_PATH)
@@ -48,7 +57,9 @@ async def resend_classifier(sighting_id: int):
     cursor.execute(
         """UPDATE sightings
            SET species_aiy = ?, confidence_aiy = ?, classifier_agreement = ?,
-               common_name = ?, classification_attempts = ?
+               common_name = ?, classification_attempts = ?,
+               review_status = 'pending_review', species_id_status = 'not_queued',
+               needs_species_id = 0
            WHERE id = ?""",
         (species_aiy, confidence_aiy, agreement, common_name, new_attempts, sighting_id)
     )
@@ -56,7 +67,8 @@ async def resend_classifier(sighting_id: int):
     conn.close()
     return {
         "id": sighting_id, "species_aiy": species_aiy, "confidence_aiy": confidence_aiy,
-        "common_name": common_name, "classification_attempts": new_attempts
+        "common_name": common_name, "classification_attempts": new_attempts,
+        "review_status": "pending_review", "species_id_status": "not_queued"
     }
 
 

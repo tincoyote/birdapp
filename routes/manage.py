@@ -142,7 +142,7 @@ async def manage_page():
                 });
             }
             async function autoPopulateDates() {
-                const res = await fetch('/api/sightings?review_status=pending_review&limit=1');
+                const res = await fetch('/api/sightings?review_status=pending_review&species_id_status=not_queued&limit=1');
                 const data = await res.json();
                 if (data.items.length === 0) { alert('No pending reviews'); return; }
                 const dates = data.items.map(s => s.timestamp.split('T')[0]);
@@ -171,7 +171,8 @@ async def manage_page():
                     confidence_max: conf,
                     page: currentPage,
                     limit: perPage,
-                    review_status: 'pending_review'
+                    review_status: 'pending_review',
+                    species_id_status: 'not_queued'
                 });
                 if (dateFrom) params.append('date_from', dateFrom);
                 if (dateTo) params.append('date_to', dateTo);
