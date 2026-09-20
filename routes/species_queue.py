@@ -41,7 +41,8 @@ async def species_queue_page():
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, filename, timestamp, species_aiy, confidence_aiy, common_name, "
-        "species_inat, confidence_inat, classifier_agreement, species_id_status "
+        "species_inat, confidence_inat, classifier_agreement, species_id_status, "
+        "species_inat_raw_guess, confidence_inat_raw "
         "FROM sightings WHERE species_id_status IN ('queued', 'classified') "
         "AND review_status != 'rejected' "
         "ORDER BY CASE WHEN species_id_status = 'classified' THEN 0 ELSE 1 END, "
@@ -115,6 +116,7 @@ async def species_queue_page():
             .opinion {{ flex: 1; font-size: 14px; font-weight: 600; text-align: center; background: rgba(255,255,255,0.1); border-radius: 4px; padding: 8px; color: white; }}
             .src {{ font-size: 10px; font-weight: 700; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }}
             .conf {{ font-size: 11px; font-weight: 400; color: #ccc; }}
+            .raw-guess {{ font-size: 10px; font-weight: 400; font-style: italic; color: #999; margin-top: 3px; }}
             .badge {{ display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-bottom: 10px; }}
             .pick-row {{ display: flex; gap: 6px; margin-bottom: 8px; }}
             .pick-row button {{ flex: 1; }}
@@ -203,7 +205,7 @@ async def species_queue_page():
                     panel += `
                         <div class="compare">
                             <div class="opinion"><div class="src">AIY</div>${{esc(r.aiy_label)}}<div class="conf">${{aiyConf}}</div></div>
-                            <div class="opinion"><div class="src">SpeciesNet</div>${{esc(r.inat_label)}}<div class="conf">${{inatConf}}</div></div>
+                            <div class="opinion"><div class="src">SpeciesNet</div>${{esc(r.inat_label)}}<div class="conf">${{inatConf}}</div>${{r.species_inat_raw_guess ? `<div class="raw-guess">raw top guess: ${{esc(r.species_inat_raw_guess)}} (${{Math.round(r.confidence_inat_raw * 100)}}%)</div>` : ''}}</div>
                         </div>
                         <span class="badge" style="background:${{st.bg}}; color:${{st.fg}};">${{st.text}}</span>
                         <div class="pick-row">

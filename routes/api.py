@@ -74,20 +74,23 @@ async def queue_species_id(sighting_id: int):
     endpoint's real value is overriding AIY's own gating call on something
     it silently dropped (e.g. tagging a real squirrel as 'background').
 
-    Idempotent, but only against mid-flight states. Only 'queued' and
-    'classified' are skipped - a sighting that's still on its first pass
-    through the pipeline (auto-queued, or classified but not yet reviewed
-    by a human) shouldn't get silently reset just because this endpoint
-    got called again, which is what caused duplicate SpeciesNet runs on
-    2026-09-11. 'confirmed' is deliberately NOT skipped: per the actual
-    instruction, "moved to the gallery" was named as one of the two valid
-    reasons a sighting should be allowed to go through again - a confirmed
-    sighting only ends up back in Manage's pending_review list because a
-    human explicitly sent it back from Gallery, which IS the intentional
-    resend, not an accident to guard against. An earlier version of this
-    endpoint treated 'confirmed' as terminal and blocked this legitimate
-    case too - fixed 2026-09-12 after it silently broke exactly this
-    workflow during a database cleanup pass."""
+    Idempotent, but only against a genuine mid-flight state. Only 'queued'
+    is skipped - a sighting still on its first pass through the pipeline
+    (auto-queued, waiting on SpeciesNet) shouldn't get silently reset just
+    because this endpoint got called again, which is what caused duplicate
+    SpeciesNet runs on 2026-09-11. 'classified' and 'confirmed' are both
+    deliberately NOT skipped, for the same underlying reason even though
+    they were fixed on different dates: both are completed states, not
+    mid-flight ones, and a human calling this endpoint again on a completed
+    sighting is asking for a legitimate re-run, not accidentally repeating
+    a first pass. 'confirmed' was fixed 2026-09-12 after an earlier version
+    treated it as terminal and silently broke Gallery's "send back to
+    review" workflow. 'classified' had the identical bug until 2026-09-20:
+    discovered when a photo's official SpeciesNet result had rolled up to
+    a coarse label, its own raw classifier output actually had the right
+    species, and there was no way to ask for a fresh pass after fixing the
+    crop box - the endpoint just silently no-opped, because 'classified'
+    was (wrongly) grouped with 'queued' as if still in progress."""
     from main import DB_PATH
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -97,7 +100,7 @@ async def queue_species_id(sighting_id: int):
         conn.close()
         return {"error": "Sighting not found"}
     current_status = row[0]
-    if current_status in ("queued", "classified"):
+    if current_status == "queued":
         conn.close()
         return {"id": sighting_id, "species_id_status": current_status, "already_in_pipeline": True}
 
@@ -182,6 +185,12 @@ async def second_opinion(sighting_id: int, body: dict):
     confidence_inat = body.get("confidence_inat")
     is_species_level_inat = body.get("is_species_level_inat", True)
     higher_level_match = body.get("higher_level_match")
+    # Only meaningful when is_species_level_inat is False - the raw top
+    # candidate SpeciesNet's classifier actually favored before its own
+    # rollup logic stepped the official prediction back to a coarser
+    # label. See migrate_v5_to_v6 for why this is worth keeping at all.
+    species_inat_raw_guess = body.get("species_inat_raw_guess")
+    confidence_inat_raw = body.get("confidence_inat_raw")
     if species_inat is None:
         return {"error": "species_inat is required"}
 
@@ -202,15 +211,18 @@ async def second_opinion(sighting_id: int, body: dict):
     cursor.execute(
         """UPDATE sightings
            SET species_inat = ?, confidence_inat = ?, classifier_agreement = ?,
-               species_id_status = 'classified'
+               species_id_status = 'classified',
+               species_inat_raw_guess = ?, confidence_inat_raw = ?
            WHERE id = ?""",
-        (species_inat, confidence_inat, agreement, sighting_id)
+        (species_inat, confidence_inat, agreement,
+         species_inat_raw_guess, confidence_inat_raw, sighting_id)
     )
     conn.commit()
     conn.close()
     return {
         "id": sighting_id, "species_inat": species_inat, "confidence_inat": confidence_inat,
-        "classifier_agreement": agreement
+        "classifier_agreement": agreement,
+        "species_inat_raw_guess": species_inat_raw_guess, "confidence_inat_raw": confidence_inat_raw
     }
 
 

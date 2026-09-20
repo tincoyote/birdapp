@@ -132,6 +132,36 @@ def migrate_v4_to_v5(db_path):
     conn.close()
 
 
+def migrate_v5_to_v6(db_path):
+    """Add species_inat_raw_guess / confidence_inat_raw: SpeciesNet's top
+    pre-rollup classifier candidate and score, captured even when the
+    ensemble's own confidence-margin logic rolled the official prediction
+    up to a coarser label (e.g. 'bird'). Discovered 2026-09-20 that a rolled-
+    up result can still have the correct species sitting in the raw
+    classifier output - e.g. official prediction 'bird' at a rollup-adjusted
+    0.944, while the raw top candidate was 'California Scrub-Jay' at 0.52,
+    matching AIY's own independent guess for the same photo. Previously
+    that raw candidate was computed by run_second_opinion.py and then
+    silently discarded - these columns keep it instead of throwing it away.
+    NULL for every pre-existing row and for any row where SpeciesNet
+    resolved to species level directly (nothing rolled up, so there's no
+    separate 'raw' guess worth keeping - species_inat already has it).
+    Same idempotent PRAGMA table_info pattern as prior migrations."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("PRAGMA table_info(sightings)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    if "species_inat_raw_guess" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN species_inat_raw_guess TEXT")
+    if "confidence_inat_raw" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN confidence_inat_raw REAL")
+
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else "/app/data/birds.db"
@@ -139,4 +169,5 @@ if __name__ == "__main__":
     migrate_v2_to_v3(path)
     migrate_v3_to_v4(path)
     migrate_v4_to_v5(path)
+    migrate_v5_to_v6(path)
     print(f"Migration complete: {path}")

@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Query, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
-from migration import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4, migrate_v4_to_v5
+from migration import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4, migrate_v4_to_v5, migrate_v5_to_v6
 from PIL import Image
 import tflite_runtime.interpreter as tflite
 from routes.nav import NAV_HTML
@@ -162,6 +162,7 @@ migrate_v1_to_v2(DB_PATH)
 migrate_v2_to_v3(DB_PATH)
 migrate_v3_to_v4(DB_PATH)
 migrate_v4_to_v5(DB_PATH)
+migrate_v5_to_v6(DB_PATH)
 
 # --- AIY (Google) bird classifier: loads once at startup, fails soft if files are missing ---
 aiy_interpreter = None

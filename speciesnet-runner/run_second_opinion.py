@@ -220,6 +220,29 @@ def parse_prediction(pred: dict) -> dict:
     else:
         label_parts = [p for p in parts if p]
         label = label_parts[-1] if label_parts else "no cv result"
+
+    # When the official prediction rolled up to a coarser label, the raw
+    # pre-rollup classifier output may still hold a genuine species-level
+    # guess - discovered 2026-09-20 that a Scrub-Jay photo rolled up to
+    # official 'bird' at 0.944 while the raw top candidate was correctly
+    # 'California Scrub-Jay' at 0.52, matching AIY's own independent guess.
+    # Surface that instead of silently discarding it - see birdapp's
+    # migrate_v5_to_v6 for the schema this feeds. Only computed when it
+    # would add information beyond species_inat itself (i.e. something
+    # actually rolled up).
+    raw_guess = None
+    raw_score = None
+    if not is_species_level:
+        classifications = pred.get("classifications") or {}
+        top_classes = classifications.get("classes") or []
+        top_scores = classifications.get("scores") or []
+        if top_classes and top_scores:
+            top_parts = top_classes[0].split(";")
+            top_genus, top_species = (top_parts + [""] * 7)[4:6]
+            if top_genus not in ("", "no cv result") and top_species not in ("", "no cv result"):
+                raw_guess = f"{top_genus.capitalize()} {top_species}"
+                raw_score = top_scores[0]
+
     return {
         "species_inat": label,
         "confidence_inat": pred["prediction_score"],
@@ -227,10 +250,14 @@ def parse_prediction(pred: dict) -> dict:
         "class": cls,
         "order": order,
         "family": family,
+        "species_inat_raw_guess": raw_guess,
+        "confidence_inat_raw": raw_score,
     }
 
 def post_second_opinion(sighting_id: int, species_inat: str, confidence_inat: float,
-                         is_species_level: bool, higher_level_match: bool | None):
+                         is_species_level: bool, higher_level_match: bool | None,
+                         species_inat_raw_guess: str | None = None,
+                         confidence_inat_raw: float | None = None):
     resp = requests.post(
         f"{BIRDAPP_BASE_URL}/api/sightings/{sighting_id}/second-opinion",
         json={
@@ -238,6 +265,8 @@ def post_second_opinion(sighting_id: int, species_inat: str, confidence_inat: fl
             "confidence_inat": confidence_inat,
             "is_species_level_inat": is_species_level,
             "higher_level_match": higher_level_match,
+            "species_inat_raw_guess": species_inat_raw_guess,
+            "confidence_inat_raw": confidence_inat_raw,
         },
         auth=(ADMIN_USER, ADMIN_PASS),
         timeout=15,
@@ -291,11 +320,16 @@ def main():
                 )
             result = post_second_opinion(
                 sighting_id, parsed["species_inat"], parsed["confidence_inat"],
-                parsed["is_species_level"], higher_level_match
+                parsed["is_species_level"], higher_level_match,
+                parsed["species_inat_raw_guess"], parsed["confidence_inat_raw"]
             )
+            raw_note = ""
+            if parsed["species_inat_raw_guess"]:
+                raw_note = (f" (raw top guess: {parsed['species_inat_raw_guess']} "
+                            f"@ {parsed['confidence_inat_raw']:.2f})")
             print(f"  id={sighting_id} -> {parsed['species_inat']} ({parsed['confidence_inat']:.2f}) "
                   f"species_level={parsed['is_species_level']} higher_level_match={higher_level_match} "
-                  f"agreement={result.get('classifier_agreement')}")
+                  f"agreement={result.get('classifier_agreement')}{raw_note}")
             posted += 1
 
     print(f"Done. Posted {posted} second opinions.")

@@ -91,6 +91,29 @@ framework - server-rendered HTML with fetch-based actions).
 - [SpeciesNet](https://github.com/google/cameratrapai) - second classifier
 - [HISTORY.md](HISTORY.md) - project history and lessons learned
 
+## Acknowledgments
+
+This project builds on models and data from others:
+
+- **[SpeciesNet](https://github.com/google/cameratrapai)** (Google) - the
+  second classifier. If you use SpeciesNet yourself, cite:
+
+  ```bibtex
+  @article{gadot2024crop,
+    title={To crop or not to crop: Comparing whole-image and cropped classification on a large dataset of camera trap images},
+    author={Gadot, Tomer and Istrate, Ștefan and Kim, Hyungwon and Morris, Dan and Beery, Sara and Birch, Tanya and Ahumada, Jorge},
+    journal={IET Computer Vision},
+    year={2024},
+    publisher={Wiley Online Library}
+  }
+  ```
+
+- **AIY bird classifier** (Google) - the first-pass, on-box classifier that
+  runs on every incoming photo before SpeciesNet ever sees it.
+- **[Ornithophile](https://github.com/tustoz/ornithophile)** (Academic
+  Non-Commercial license) - source data for `common_names.csv`, the
+  scientific-name-to-common-name lookup AIY's results are displayed through.
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE) - free to use, modify, and share
