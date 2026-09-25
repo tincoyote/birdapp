@@ -19,9 +19,6 @@ it only reads whatever's already there.
 
 Usage:
     .venv\\Scripts\\python.exe run_second_opinion.py --limit 50
-
-See SETUP.md in the repo root for how to set this script up in its own
-folder, separate from the birdapp checkout itself.
 """
 import argparse
 import json
@@ -76,6 +73,7 @@ except FileNotFoundError:
     print(f"Can't find {CAMERA_CONFIG_PATH} - is the S: drive mapped and connected?")
     sys.exit(1)
 
+
 def load_taxonomy_map() -> dict:
     """Maps 'genus species' (lowercase) -> (class, order, family) using
     SpeciesNet's own bundled taxonomy reference file. Lets us check whether
@@ -108,6 +106,61 @@ def load_taxonomy_map() -> dict:
 
 
 TAXONOMY_MAP = load_taxonomy_map()
+
+# --- AIY on the detector crop (2026-09-23) ---------------------------------
+# Same model birdapp's container runs, but fed SpeciesNet's bird bounding box
+# (plus margin, letterboxed to square) instead of the full frame. Downloaded
+# next to this script on first run from the same URLs as birdapp's Dockerfile.
+_HERE = Path(__file__).parent
+AIY_MODEL = _HERE / "aiy_birds_v1.tflite"
+AIY_LABELS = _HERE / "aiy_labelmap.csv"
+_aiy = {}
+
+
+def aiy_classify(img) -> tuple[str, float]:
+    import csv, urllib.request
+    import numpy as np
+    from PIL import Image
+    if not _aiy:
+        from ai_edge_litert.interpreter import Interpreter
+        if not AIY_MODEL.exists():
+            urllib.request.urlretrieve("https://tfhub.dev/google/lite-model/aiy/vision/classifier/birds_V1/3?lite-format=tflite", AIY_MODEL)
+        if not AIY_LABELS.exists():
+            urllib.request.urlretrieve("https://www.gstatic.com/aihub/tfhub/labelmaps/aiy_birds_V1_labelmap.csv", AIY_LABELS)
+        with open(AIY_LABELS) as f:
+            _aiy["labels"] = {int(r["id"]): r["name"] for r in csv.DictReader(f)}
+        interp = Interpreter(model_path=str(AIY_MODEL))
+        interp.allocate_tensors()
+        _aiy.update(interp=interp, inp=interp.get_input_details()[0], out=interp.get_output_details()[0])
+    w, h = img.size
+    side = max(w, h)
+    pad = Image.new("RGB", (side, side), (0, 0, 0))
+    pad.paste(img, ((side - w) // 2, (side - h) // 2))
+    arr = np.expand_dims(np.array(pad.resize((224, 224))), 0).astype(np.uint8)
+    interp = _aiy["interp"]
+    interp.set_tensor(_aiy["inp"]["index"], arr)
+    interp.invoke()
+    scores = interp.get_tensor(_aiy["out"]["index"])[0].astype(np.float32) * _aiy["out"]["quantization"][0]
+    top = int(np.argmax(scores))
+    return _aiy["labels"].get(top, str(top)), float(scores[top])
+
+
+def aiy_on_detection(image_path: Path, pred: dict) -> tuple[str | None, float | None]:
+    """Crop SpeciesNet's top detection (+15% margin) and run AIY on it.
+    Returns (None, None) when there's no detection to crop."""
+    from PIL import Image
+    dets = pred.get("detections") or []
+    if not dets:
+        return None, None
+    x, y, w, h = dets[0]["bbox"]
+    mx, my = w * 0.15, h * 0.15
+    with Image.open(image_path) as img:
+        img = img.convert("RGB")
+        W, H = img.size
+        crop = img.crop((max(0, int((x - mx) * W)), max(0, int((y - my) * H)),
+                         min(W, int((x + w + mx) * W)), min(H, int((y + h + my) * H))))
+        return aiy_classify(crop)
+
 
 def check_higher_level_match(species_aiy: str, family: str, order: str, cls: str) -> bool | None:
     """Whether AIY's species genuinely belongs to whichever higher taxon
@@ -150,6 +203,7 @@ def fetch_queue(limit: int) -> list[dict]:
     resp.raise_for_status()
     return resp.json()["items"]
 
+
 def download_image(filename: str, dest_dir: Path) -> Path:
     resp = requests.get(
         f"{BIRDAPP_BASE_URL}/images/{filename}",
@@ -184,6 +238,7 @@ def run_speciesnet(image_dir: Path, predictions_path: Path):
         ],
         check=True,
     )
+
 
 def parse_prediction(pred: dict) -> dict:
     """SpeciesNet's 'prediction' field is a semicolon-delimited taxonomy
@@ -254,10 +309,13 @@ def parse_prediction(pred: dict) -> dict:
         "confidence_inat_raw": raw_score,
     }
 
+
 def post_second_opinion(sighting_id: int, species_inat: str, confidence_inat: float,
                          is_species_level: bool, higher_level_match: bool | None,
                          species_inat_raw_guess: str | None = None,
-                         confidence_inat_raw: float | None = None):
+                         confidence_inat_raw: float | None = None,
+                         species_aiy: str | None = None,
+                         confidence_aiy: float | None = None):
     resp = requests.post(
         f"{BIRDAPP_BASE_URL}/api/sightings/{sighting_id}/second-opinion",
         json={
@@ -267,6 +325,8 @@ def post_second_opinion(sighting_id: int, species_inat: str, confidence_inat: fl
             "higher_level_match": higher_level_match,
             "species_inat_raw_guess": species_inat_raw_guess,
             "confidence_inat_raw": confidence_inat_raw,
+            "species_aiy": species_aiy,
+            "confidence_aiy": confidence_aiy,
         },
         auth=(ADMIN_USER, ADMIN_PASS),
         timeout=15,
@@ -313,23 +373,26 @@ def main():
                 continue
             sighting_id = sighting["id"]
             parsed = parse_prediction(pred)
+            aiy_species, aiy_conf = aiy_on_detection(tmp_path / filename, pred)
             higher_level_match = None
             if not parsed["is_species_level"]:
                 higher_level_match = check_higher_level_match(
-                    sighting.get("species_aiy"), parsed["family"], parsed["order"], parsed["class"]
+                    aiy_species or sighting.get("species_aiy"), parsed["family"], parsed["order"], parsed["class"]
                 )
             result = post_second_opinion(
                 sighting_id, parsed["species_inat"], parsed["confidence_inat"],
                 parsed["is_species_level"], higher_level_match,
-                parsed["species_inat_raw_guess"], parsed["confidence_inat_raw"]
+                parsed["species_inat_raw_guess"], parsed["confidence_inat_raw"],
+                aiy_species, aiy_conf
             )
             raw_note = ""
             if parsed["species_inat_raw_guess"]:
                 raw_note = (f" (raw top guess: {parsed['species_inat_raw_guess']} "
                             f"@ {parsed['confidence_inat_raw']:.2f})")
+            aiy_note = f" aiy_crop={aiy_species} ({aiy_conf:.2f})" if aiy_species else " aiy_crop=no detection"
             print(f"  id={sighting_id} -> {parsed['species_inat']} ({parsed['confidence_inat']:.2f}) "
                   f"species_level={parsed['is_species_level']} higher_level_match={higher_level_match} "
-                  f"agreement={result.get('classifier_agreement')}{raw_note}")
+                  f"agreement={result.get('classifier_agreement')}{raw_note}{aiy_note}")
             posted += 1
 
     print(f"Done. Posted {posted} second opinions.")

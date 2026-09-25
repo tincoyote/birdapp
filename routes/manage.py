@@ -58,8 +58,15 @@ async def manage_page():
             <div class="filters">
                 <div class="filter-group"><label>Date From</label><input type="date" id="dateFrom"></div>
                 <div class="filter-group"><label>Date To</label><input type="date" id="dateTo"></div>
-                <div class="filter-group"><label>Species</label><select id="species"><option value="">All Species</option></select></div>
-                <div class="filter-group"><label>Max Confidence: <span id="confLabel">100%</span></label><input type="range" id="confidence" min="0" max="100" value="100"></div>
+                <style>
+                    /* Manage is bird/no-bird screening only (2026-09-23): full-frame AIY names
+                       are unreliable, so hide Common Name (3), Latin (4), Confidence (7). */
+                    table th:nth-child(3), table td:nth-child(3),
+                    table th:nth-child(4), table td:nth-child(4),
+                    table th:nth-child(7), table td:nth-child(7) { display: none; }
+                </style>
+                <div class="filter-group" style="display:none"><label>Species</label><select id="species"><option value="">All Species</option></select></div>
+                <div class="filter-group" style="display:none"><label>Max Confidence: <span id="confLabel">100%</span></label><input type="range" id="confidence" min="0" max="100" value="100"></div>
             </div>
 
             <div class="controls">
@@ -71,7 +78,7 @@ async def manage_page():
 
             <div class="controls">
                 <button class="btn-success" onclick="acceptSelected()" id="btnAccept" disabled>Send to Species Queue</button>
-                <button class="btn-primary" onclick="resendSelected()" id="btnResend" disabled>Resend to Classifier</button>
+                <button class="btn-primary" onclick="resendSelected()" id="btnResend" disabled style="display:none">Resend to Classifier</button>
                 <button class="btn-danger" onclick="deleteSelected()" id="btnDel" disabled>Reject to Trash</button>
             </div>
 
@@ -110,12 +117,12 @@ async def manage_page():
             <button onclick="navPreview(1)" style="position:absolute; right:20px; top:50%; transform:translateY(-50%); font-size:28px; padding:14px 18px; background:rgba(255,255,255,0.15); color:white;">&#8594;</button>
             <img id="previewImg" style="max-width:80%; max-height:65%; border-radius:4px;">
             <div style="color:white; margin-top:15px; text-align:center;">
-                <div id="previewCommon" style="font-size:20px; font-weight:600;"></div>
+                <div id="previewCommon" style="display:none"></div>
                 <div id="previewMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
             </div>
             <div class="controls" style="margin-top:18px;">
                 <button class="btn-success" onclick="previewAction('approve')">Send to Species Queue</button>
-                <button class="btn-primary" onclick="previewAction('resend')">Resend to Classifier</button>
+                <button class="btn-primary" onclick="previewAction('resend')" style="display:none">Resend to Classifier</button>
                 <button class="btn-danger" onclick="previewAction('reject')">Reject to Trash</button>
             </div>
         </div>
@@ -231,7 +238,7 @@ async def manage_page():
                 document.getElementById('previewImg').src = `/images/${s.filename}`;
                 document.getElementById('previewCommon').textContent = common;
                 document.getElementById('previewMeta').textContent =
-                    `${s.species_aiy || 'Unknown'} - ${(s.confidence_aiy * 100).toFixed(0)}% - attempt ${s.classification_attempts || 1} - SN: ${s.species_id_status || 'not_queued'} - ${s.timestamp.split('T')[0]} (${previewIndex + 1} of ${allSightings.length})`;
+                    `${s.timestamp.split('T')[0]} (${previewIndex + 1} of ${allSightings.length})`;
             }
 
             function navPreview(delta) {

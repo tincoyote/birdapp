@@ -234,7 +234,25 @@ def classify_aiy(image_path):
         # classifier's full input resolution instead of sharing it with the
         # driveway/street that surround it in the full wide-angle frame.
         img = img.crop(CROP_BOX)
-        img = img.resize((width, height))
+        # Pad to square before resizing, rather than resizing straight to
+        # the model's (width, height) - CROP_BOX is chosen for framing
+        # reasons (motion coverage, keeping the driveway out) and has never
+        # been square, but the model's actual input is 224x224. A direct
+        # .resize() stretches non-uniformly to fit a square target, and
+        # discovered 2026-09-21: a 900x400 crop resized straight to 224x224
+        # was compressing horizontally ~2.25x more than vertically, visibly
+        # squashing any bird sideways before the model ever saw it - AIY
+        # calling "background" far more often even on clear, well-framed
+        # shots was the symptom. Padding to a square canvas first (black
+        # bars on whichever axis is shorter) means the resize afterward is
+        # a uniform scale with no distortion, regardless of CROP_BOX's
+        # shape - decouples framing decisions from this entirely, so a
+        # future crop box change can't reintroduce the same problem.
+        crop_w, crop_h = img.size
+        side = max(crop_w, crop_h)
+        padded = Image.new("RGB", (side, side), (0, 0, 0))
+        padded.paste(img, ((side - crop_w) // 2, (side - crop_h) // 2))
+        img = padded.resize((width, height))
         arr = np.array(img)
 
         input_dtype = aiy_input_details[0]['dtype']
@@ -322,9 +340,9 @@ def classify_and_save(image_path, sighting_id):
 
     agreement = compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat)
 
-    # --- Gating logic (2026-09-07) ---
-    # AIY runs on every photo, same as always - unchanged and cheap. What's
-    # new is what happens to the RESULT.
+    # --- Gating logic (2026-09-07, reverted 2026-09-20) ---
+    # AIY runs on every photo, same as always - unchanged and cheap. What
+    # changed between those two dates is what happens to the RESULT.
     #
     # Auto-trash is OFF by default (see the constants above - measured
     # against real data, AIY's confidence doesn't actually separate birds
@@ -332,13 +350,20 @@ def classify_and_save(image_path, sighting_id):
     # human-approved photos). Both switches are left in place, wired and
     # ready, so re-enabling is a one-line change if a better signal shows up.
     #
-    # What DOES happen unconditionally: anything AIY didn't call junk gets
-    # flagged needs_species_id=1 / species_id_status='queued'. Nothing
-    # consumes that queue yet - no second classifier exists - but the moment
-    # one does, it has a real, already-populated backlog instead of needing
-    # to reprocess the entire photo library from scratch. This part is
-    # non-destructive, which is why it's safe to run by default while the
-    # auto-trash half stays off.
+    # From 2026-09-07 to 2026-09-20, anything AIY didn't call junk was ALSO
+    # auto-flagged needs_species_id=1 / species_id_status='queued' at
+    # capture time, before a human ever saw it - meant as a harmless queue-
+    # priming optimization for whenever a second classifier showed up.
+    # It stopped being harmless once Manage started filtering its own list
+    # to species_id_status='not_queued' (2026-09-20, so Manage only shows
+    # genuinely fresh arrivals, not things already queued elsewhere): every
+    # new photo was already 'queued' before Manage ever loaded, so Manage's
+    # list was permanently empty and everything skipped straight to Species
+    # Queue - discovered when a full day's photos did exactly that. Queue
+    # state is now set ONLY by explicit human action (Manage's "Send to
+    # Species Queue", or /resend-classifier's reset) - never automatically
+    # at capture time - which is what actually makes Manage a real gate
+    # instead of a pass-through.
     is_background_or_junk = (
         species_aiy is None
         or (AUTO_TRASH_ON_BACKGROUND_LABEL and species_aiy == "background")
@@ -356,8 +381,8 @@ def classify_and_save(image_path, sighting_id):
         auto_note = "auto-rejected: background or confidence below threshold"
     else:
         review_status = "pending_review"
-        needs_species_id = 1
-        species_id_status = "queued"
+        needs_species_id = 0
+        species_id_status = "not_queued"
         auto_note = None
 
     cursor.execute(

@@ -215,6 +215,22 @@ async def second_opinion(sighting_id: int, body: dict):
         return {"error": "Sighting not found"}
 
     species_aiy, confidence_aiy = result
+    # Optional AIY re-run on SpeciesNet's detector crop (2026-09-23). The
+    # capture-time AIY result runs on the full frame, where the bird is only
+    # ~17-46px of AIY's 224px input - it said 'background' or defaulted to
+    # 'House Sparrow' on clear House Finch photos. The same model on the
+    # detector's bird crop called them correctly at 0.55-0.96. When the
+    # runner supplies it, it replaces the full-frame guess outright.
+    common_name_update = None
+    if body.get("species_aiy") is not None:
+        from main import common_names
+        species_aiy = body["species_aiy"]
+        confidence_aiy = body.get("confidence_aiy")
+        common_name_update = common_names.get(species_aiy)
+        cursor.execute(
+            "UPDATE sightings SET species_aiy = ?, confidence_aiy = ?, common_name = ? WHERE id = ?",
+            (species_aiy, confidence_aiy, common_name_update, sighting_id)
+        )
     agreement = compute_agreement(
         species_aiy, confidence_aiy, species_inat, confidence_inat,
         is_species_level_inat, higher_level_match
