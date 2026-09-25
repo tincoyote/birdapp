@@ -235,6 +235,9 @@ def run_speciesnet(image_dir: Path, predictions_path: Path):
             VENV_PYTHON, "-m", "speciesnet.scripts.run_model",
             "--folders", str(image_dir),
             "--predictions_json", str(predictions_path),
+            # Without a location the geofence has nothing to check against, so
+            # out-of-region species could pass through (2026-09-24).
+            "--country", "USA", "--admin1_region", "CA",
         ],
         check=True,
     )

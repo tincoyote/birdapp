@@ -165,9 +165,24 @@ async def trash_page():
             
             async function emptyTrash() {
                 if (!confirm('Permanently delete ALL trash (not just visible)? This cannot be undone.')) return;
-                const res = await fetch('/api/trash-review/empty', { method: 'POST' });
+                const btn = document.querySelector('button[onclick="emptyTrash()"]');
+                const label = btn.textContent;
+                btn.disabled = true;
+                btn.textContent = 'Deleting...';
+                let res;
+                try {
+                    res = await fetch('/api/trash-review/empty', { method: 'POST' });
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = label;
+                }
                 const data = await res.json();
-                showInfo(`Permanently deleted ${data.permanently_deleted} items`);
+                let msg = `Permanently deleted ${data.permanently_deleted} items`;
+                if (data.errors && data.errors.length) {
+                    msg += ` - ${data.errors.length} failed: ${data.errors[0].filename}: ${data.errors[0].error}`;
+                    console.log('Empty trash errors:', data.errors);
+                }
+                showInfo(msg);
                 applyFilters();
             }
             
