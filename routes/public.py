@@ -47,7 +47,7 @@ async def public_species_list():
         FROM sightings
         WHERE review_status = 'approved'
               AND COALESCE(species_confirmed, common_name, species_aiy) IS NOT NULL
-        ORDER BY effective_species
+        ORDER BY effective_species COLLATE NOCASE
     """)
     species = [{"value": r[0], "label": r[0]} for r in c.fetchall()]
     conn.close()

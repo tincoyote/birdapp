@@ -9,6 +9,10 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    environment:
+      # Timestamps are stamped with the container's local time; without this
+      # the container ran on UTC and evening photos showed as tomorrow's date.
+      - TZ=America/Los_Angeles
     env_file:
       # Loads ADMIN_USERNAME/ADMIN_PASSWORD/API_USERNAME/API_PASSWORD
       # directly as real container env vars (gitignored, real values only).

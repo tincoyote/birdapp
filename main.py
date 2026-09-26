@@ -679,24 +679,30 @@ async def species_list(review_status: str = Query(None), username: str = Depends
     cursor = conn.cursor()
     if review_status:
         where = "review_status = ?"
-        params = (review_status, review_status)
+        params = (review_status,)
     else:
         where = "is_trashed = 0"
         params = ()
+    # One entry per photo: the confirmed species if a human set one, else
+    # AIY's guess - the same rule /api/sightings' species filter matches on.
+    # Previously it UNIONed species_confirmed with species_aiy, so a photo
+    # AIY called "House Sparrow" but confirmed as House Finch put BOTH names
+    # in Gallery's dropdown, and the sparrow entry matched nothing (2026-09-25).
     cursor.execute(f"""
-        SELECT DISTINCT species_confirmed FROM sightings
-        WHERE {where} AND species_confirmed IS NOT NULL
-        UNION
-        SELECT DISTINCT species_aiy FROM sightings
-        WHERE {where} AND species_aiy IS NOT NULL AND species_aiy != 'background'
-        ORDER BY 1
+        SELECT DISTINCT COALESCE(species_confirmed, species_aiy) FROM sightings
+        WHERE {where} AND COALESCE(species_confirmed, species_aiy) IS NOT NULL
+          AND COALESCE(species_confirmed, species_aiy) != 'background'
     """, params)
     species = [row[0] for row in cursor.fetchall()]
     conn.close()
     # value = the actual DB value filters compare against (scientific name, or
     # a manually-confirmed name); label = common name where we have one,
     # falling back to the raw value so custom/unmapped entries still display.
-    return {"species": [{"value": s, "label": common_names.get(s, s)} for s in species]}
+    # Sorted by the label the user sees, not the raw value (which mixes Latin
+    # names and "Common (Latin)" strings and looked unordered).
+    items = [{"value": s, "label": common_names.get(s, s)} for s in species]
+    items.sort(key=lambda x: x["label"].lower())
+    return {"species": items}
 
 
 # New modular routes: manage (review), gallery (approved), trash (rejected),
