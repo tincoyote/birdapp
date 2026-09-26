@@ -364,9 +364,13 @@ def classify_and_save(image_path, sighting_id):
     # Species Queue", or /resend-classifier's reset) - never automatically
     # at capture time - which is what actually makes Manage a real gate
     # instead of a pass-through.
+    # species_aiy being None means AIY FAILED (model missing/corrupt, bad
+    # image), not that it judged the photo junk. It used to count as junk,
+    # which on 2026-09-24/25 silently auto-rejected ~440 photos into the
+    # trash when a bad model download broke AIY. A failure now lands in
+    # Manage like any other photo, with a note, so it's visible, not lost.
     is_background_or_junk = (
-        species_aiy is None
-        or (AUTO_TRASH_ON_BACKGROUND_LABEL and species_aiy == "background")
+        (AUTO_TRASH_ON_BACKGROUND_LABEL and species_aiy == "background")
         or (
             AUTO_TRASH_CONFIDENCE_THRESHOLD is not None
             and confidence_aiy is not None
@@ -383,7 +387,7 @@ def classify_and_save(image_path, sighting_id):
         review_status = "pending_review"
         needs_species_id = 0
         species_id_status = "not_queued"
-        auto_note = None
+        auto_note = "AIY classification failed at capture" if species_aiy is None else None
 
     cursor.execute(
         """UPDATE sightings
