@@ -700,7 +700,9 @@ async def species_list(review_status: str = Query(None), username: str = Depends
     # falling back to the raw value so custom/unmapped entries still display.
     # Sorted by the label the user sees, not the raw value (which mixes Latin
     # names and "Common (Latin)" strings and looked unordered).
-    items = [{"value": s, "label": common_names.get(s, s)} for s in species]
+    items = [{"value": s,
+              "label": s if ("(" in s or s not in common_names) else f"{common_names[s]} ({s})"}
+             for s in species]
     items.sort(key=lambda x: x["label"].lower())
     return {"species": items}
 
@@ -715,6 +717,7 @@ from routes.trash import router as trash_router
 from routes.api import router as review_api_router
 from routes.species_queue import router as species_queue_router
 from routes.public import router as public_router
+from routes.stats import router as stats_router
 
 # Every existing admin router gets the SAME auth dependency applied at the
 # include_router() level - this protects every route already defined inside
@@ -729,4 +732,5 @@ app.include_router(gallery_router, dependencies=_admin_deps)
 app.include_router(trash_router, dependencies=_admin_deps)
 app.include_router(review_api_router, dependencies=_admin_deps)
 app.include_router(species_queue_router, dependencies=_admin_deps)
+app.include_router(stats_router, dependencies=_admin_deps)
 app.include_router(public_router)

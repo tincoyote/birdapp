@@ -252,7 +252,13 @@ async def gallery_page():
                 else if (e.key === 'Escape') closeLightbox();
             });
 
-            loadSpecies().then(loadSightings);
+            // /gallery?species=<value> (links from the Stats page) preselects
+            // that species. Set after loadSpecies() so the option exists.
+            loadSpecies().then(() => {
+                const pre = new URLSearchParams(location.search).get('species');
+                if (pre) document.getElementById('species').value = pre;
+                return loadSightings();
+            });
         </script>
     </body>
     </html>
