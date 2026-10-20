@@ -1,8 +1,8 @@
 # Birdapp
 
-A solar-powered Wyze Cam v3 (running [Thingino ](https://github.com/themactep/thingino-firmware)firmware) watches a backyard birdbath, captures motion-triggered photos, and
-runs them through two independent AI classifiers before a human confirms the
-final species. Approved sightings show up on a family-facing gallery.
+A solar-powered Wyze Cam v3 (running [Thingino ](https://github.com/themactep/thingino-firmware)firmware) watches a backyard birdbath, captures motion-triggered photos, finds
+every bird in each photo with MegaDetector, names each one with Google's AIY
+bird classifier, and has a human confirm the names. Approved sightings show up on a family-facing gallery.
 
 This README covers the **current** architecture only. For the story of how
 it got here - abandoned camera builds, power-system failures, and the
@@ -19,24 +19,34 @@ the same way. See `/webhook` in `main.py` - it only ever reads a multipart
 
 ## How it works
 
-1. The camera detects motion and POSTs a photo to `/webhook`.
-2. A local TFLite model ("AIY") classifies the species and confidence.
-3. Gating logic decides whether the sighting is worth a second opinion and
-   queues it if so.
-4. A standalone script (`run_second_opinion.py`, run off-box - see below)
-   pulls queued sightings via the API, runs them through [SpeciesNet](https://github.com/google/cameratrapai), and posts results back.
-5. A human reviews both classifiers side by side in **Species Queue** and
-   picks a winner (or types a correction) - this is what actually approves a sighting to the gallery.
+1. The camera detects motion and POSTs a photo to `/webhook`. The photo is
+   saved and gets a quick full-frame AIY guess.
+2. A background worker in the container (`detector.py`) runs
+   [MegaDetector](https://github.com/agentmorris/MegaDetector) v5a on it,
+   which finds every animal, person and vehicle and its box.
+3. Each animal is cropped out and classified by AIY on its own, so a photo
+   with a House Finch pair and a Scrub-Jay gets three names. AIY is far more
+   accurate on a crop: on the full frame a bird is only ~17-46 px of AIY's
+   224 px input.
+4. **Manage**: a human screens bird / no bird, using the detector's result
+   to filter ("no bird found", "2+ birds", ...) and to reject or keep every
+   match in one click.
+5. **Species Queue**: each bird has a row pre-filled with AIY's guess -
+   accept, type a correction, mark "not a bird", or one-click Squirrel/Cat
+   (AIY only knows birds). Posting approves the photo to the Gallery.
 6. Approved sightings appear on `/gallery` (admin) and `/family` (public,
-   privacy-cropped, no admin functionality exposed).
+   privacy-cropped, no admin functionality exposed). A photo counts under
+   every species in it.
 
 ## Review workflow
 
-`Manage` (cleanse the incoming feed) → `Species Queue` (compare classifiers, confirm) → `Gallery` (approved) → `/family` (public).
+`Manage` (bird / no bird) → `Species Queue` (name each bird) → `Gallery` (approved) → `/family` (public).
 
 `review_status` (pending_review/approved/rejected) and `species_id_status`
 (not_queued/queued/classified/confirmed) are deliberately independent
-columns - approving and getting a second opinion are separate questions.
+columns - approving and naming are separate questions. A third,
+`detect_status` (pending/done/failed), tracks the detector; `queued` now
+just means "sent to Species Queue, detector not finished yet".
 
 ## Architecture
 
@@ -53,33 +63,40 @@ application code is baked into the image at build time and needs a rebuild
 to take effect, even though editing files on the mapped network share is
 immediate.
 
-**Second classifier**: [SpeciesNet](https://github.com/google/cameratrapai)
-runs off-box (a laptop, not the NAS) in its own Python venv, and talks to
-birdapp exclusively over its HTTP API - it never opens `birds.db` directly.
-This matters: SQLite's file locking is not reliable over a network share,
-and keeping the container as the sole writer avoids that entirely. See
-`speciesnet-runner/run_second_opinion.py`, [SETUP.md](SETUP.md), and
-`HISTORY.md` for why this shape was chosen and how to set it up.
+**Detector**: MegaDetector v5a (the same weights SpeciesNet used) runs on
+the NAS CPU inside the container, in one low-priority background thread -
+the webhook never waits for it. Settings are in the `detector` section of
+`camera_config.json` (threshold, CPU threads); the Stats page shows whether
+it's running, its backlog, and seconds per photo. The 281 MB weights file is
+downloaded and checksum-verified at image build time. Detections live in
+the `detections` table, one row per animal, with its box and its own AIY
+name. Until 2026-10-20 a laptop ran SpeciesNet as a second opinion; it named
+zero birds in a month, so it was retired - see HISTORY.md and
+`docs/PLAN-detector.md`.
 
 ## Repo layout
 
-- `main.py` - app setup, AIY model loading, core routes, schema migrations
+- `main.py` - app setup, core routes, filters, schema migrations
+- `aiy.py` - the AIY bird classifier (shared, thread-safe)
+- `detector.py` - MegaDetector + per-bird AIY background worker
 - `routes/` - `manage.py`, `species_queue.py`, `gallery.py`, `trash.py`
   (admin, HTTP Basic Auth), `public.py` (family + about, unauthenticated),
-  `api.py` (shared JSON endpoints), `nav.py` (shared admin nav bar)
+  `api.py` (shared JSON endpoints), `nav.py` (shared admin nav bar),
+  `boxes.py` (shared code that draws detector boxes in the lightboxes),
+  `stats.py`
 - `migration.py` - idempotent schema migrations, run on every startup
 - `camera_config.json` - shared crop-box config (see Architecture above)
-- `speciesnet-runner/` - the standalone SpeciesNet script, meant to be
-  copied out to its own separate folder and run independently - see
-  SETUP.md, not run in place here
+- `docs/PLAN-detector.md` - the detector design, decisions and status
+- `_Archive/speciesnet-runner/` - the retired laptop SpeciesNet script, kept
+  for reference only
 - `common_names.csv` - scientific-name &rarr; common-name lookup for AIY's
-  species checklist (birds only - does not cover non-bird SpeciesNet
-  detections)
+  species checklist, plus the few mammals named via Species Queue's quick
+  buttons
 
 ## Tech stack
 
 Python, FastAPI, SQLite, Docker/Docker Compose, Pillow, TFLite (AIY model),
-PyTorch/SpeciesNet (external, laptop-side only), vanilla JS (no frontend
+PyTorch + YOLOv5 (MegaDetector, CPU-only), vanilla JS (no frontend
 framework - server-rendered HTML with fetch-based actions).
 
 ## Links
@@ -88,15 +105,29 @@ framework - server-rendered HTML with fetch-based actions).
 - [Wyze Cam v3](https://www.wyze.com/products/wyze-cam-v3) - camera hardware
 - [Thingino](https://github.com/themactep/thingino-firmware) - firmware
 - [Synology](https://www.synology.com/) - NAS running the server
-- [SpeciesNet](https://github.com/google/cameratrapai) - second classifier
+- [MegaDetector](https://github.com/agentmorris/MegaDetector) - finds the birds
 - [HISTORY.md](HISTORY.md) - project history and lessons learned
 
 ## Acknowledgments
 
 This project builds on models and data from others:
 
+- **[MegaDetector](https://github.com/agentmorris/MegaDetector)** (Dan
+  Morris et al.; MIT licence) - finds each animal in a photo. The detection
+  code in `detector.py` mirrors SpeciesNet's adaptation of it. Cite:
+
+  ```bibtex
+  @article{beery2019efficient,
+    title={Efficient Pipeline for Camera Trap Image Review},
+    author={Beery, Sara and Morris, Dan and Yang, Siyu},
+    journal={arXiv preprint arXiv:1907.06772},
+    year={2019}
+  }
+  ```
+
 - **[SpeciesNet](https://github.com/google/cameratrapai)** (Google) - the
-  second classifier. If you use SpeciesNet yourself, cite:
+  laptop second classifier until 2026-10-20, and where this project first
+  used MegaDetector. If you use SpeciesNet yourself, cite:
 
   ```bibtex
   @article{gadot2024crop,
@@ -108,8 +139,7 @@ This project builds on models and data from others:
   }
   ```
 
-- **AIY bird classifier** (Google) - the first-pass, on-box classifier that
-  runs on every incoming photo before SpeciesNet ever sees it.
+- **AIY bird classifier** (Google) - names each bird MegaDetector finds.
 - **[Ornithophile](https://github.com/tustoz/ornithophile)** (Academic
   Non-Commercial license) - source data for `common_names.csv`, the
   scientific-name-to-common-name lookup AIY's results are displayed through.

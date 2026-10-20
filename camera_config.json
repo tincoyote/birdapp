@@ -1,6 +1,18 @@
 {
-  "_comment": "Shared camera framing config. Single source of truth for pixel boxes referenced by main.py (classifier crop, public display crop) and run_second_opinion.py (SpeciesNet crop). Checked into git deliberately - these are not secrets, and losing git-blame history on coordinate changes was worse than the alternative. prudynt.json's motion ROI on the camera itself is a separate system and is NOT read from here - it has to be updated by hand over SSH when this changes.",
+  "_comment": "Shared camera framing and detector config, read by main.py and detector.py. Checked into git deliberately - these are not secrets, and losing git-blame history on coordinate changes was worse than the alternative. Baked into the image: changes need a rebuild. prudynt.json's motion ROI on the camera itself is a separate system and is NOT read from here - it has to be updated by hand over SSH when this changes.",
   "classifier_crop_box": [0, 0, 1920, 1080],
   "public_display_crop": [0, 0, 1920, 1080],
-  "motion_roi_reference_only": [400, 625, 1500, 900]
+  "motion_roi_reference_only": [400, 600, 1600, 825],
+  "_motion_roi_note": "Firmware ciao+b16d546 (2026-10-04) watches motion on the 768x432 substream, so the camera's prudynt.json now holds this box scaled x0.4: roi 160,240 -> 640,330. Firmware ignores the left edge (timestamp burn-in exclusion bug) and actually watches x 8-639. Sensitivity 2, cooldown 30 s.",
+  "detector": {
+    "_comment": "MegaDetector worker (detector.py; DEFAULTS there explain each value). count_threshold: a detection at or above this counts as a bird and gets its own AIY name. Raise torch_threads to speed up, lower to leave the NAS more headroom.",
+    "enabled": true,
+    "model_path": "/app/models/md_v5a.0.1.pt",
+    "model_name": "MDv5a.0.1",
+    "count_threshold": 0.2,
+    "store_threshold": 0.1,
+    "crop_margin": 0.15,
+    "image_size": 1280,
+    "torch_threads": 2
+  }
 }

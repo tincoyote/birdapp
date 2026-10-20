@@ -12,3 +12,6 @@ __pycache__/
 
 # Old exported image snapshots
 *.syno.tar
+# MegaDetector weights - downloaded and checksum-verified by the Dockerfile,
+# too big for git (281 MB)
+models/*.pt

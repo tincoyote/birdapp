@@ -11,8 +11,7 @@ prior familiarity with this specific project.
    `git clone https://github.com/tincoyote/birdapp.git`
 2. Copy `.env.example` to `.env` and fill in real values for
    `ADMIN_USERNAME`/`ADMIN_PASSWORD`. Leave `API_USERNAME`/`API_PASSWORD`
-   blank unless you're also setting up the SpeciesNet second-opinion script
-   below - see `.env.example` for what each one is for.
+   blank - they were only for the retired SpeciesNet script.
 3. Build and start it: `docker compose up -d --build`
 4. Birdapp is now reachable at `http://<your-server>:8000`. `/manage`,
    `/gallery`, `/species-queue`, and `/trash` need the admin credentials
@@ -28,41 +27,27 @@ prior familiarity with this specific project.
    you want the public gallery to show, and edit the two boxes in that
    file accordingly.
 
-## 2. SpeciesNet second-opinion script (optional)
+## 2. Bird detector (built in)
 
-This is a completely separate piece from birdapp itself - it's a standalone
-script that runs on any machine with Python (your own laptop or desktop,
-not necessarily the server running birdapp), calls birdapp's API, and never
-touches its database directly. Birdapp works fine without this - sightings
-just won't get a second classifier opinion, and Species Queue will only
-ever show AIY's guess.
+Nothing to set up separately - MegaDetector runs inside the birdapp
+container. The first `docker compose up -d --build` downloads PyTorch
+(CPU-only) and the 281 MB MegaDetector weights, so it takes a while and the
+image is ~1.5 GB bigger than before; the build fails loudly if the weights
+download is incomplete or wrong (checksum), rather than starting broken.
 
-**Give it its own folder, separate from the birdapp checkout.** Do not put
-it inside your birdapp clone. It needs its own Python virtual environment
-with a large, unrelated dependency stack (PyTorch and friends, a few
-hundred MB), and mixing that into the birdapp git repo risks accidentally
-committing gigabytes of files that have nothing to do with the app itself.
+- Check `/stats` -> "Bird detector": it should say *Running*. After the
+  first start, every existing photo is re-scanned in the background, newest
+  first; the backlog and time per photo are shown there.
+- Tuning lives in the `detector` section of `camera_config.json`. That
+  file is baked into the image (only `./data` is a live volume), so a change
+  takes effect after a rebuild.
+  - `count_threshold` (default 0.2): detector confidence at which something
+    counts as a bird.
+  - `torch_threads` (default 2): CPU threads. More = faster scans, less
+    headroom for everything else on the machine.
+  - `enabled: false` turns the detector off entirely (photos then stay
+    "Not scanned yet" in Manage).
 
-1. Create a new folder anywhere else on your machine, e.g.
-   `~/speciesnet-runner/` (unrelated to the repo folder of the same name -
-   that one just holds the script for you to copy out).
-2. Copy `speciesnet-runner/run_second_opinion.py` from this repo into your
-   new folder.
-3. Inside that new folder: `python -m venv .venv`, activate it, then
-   `pip install speciesnet requests pillow`.
-4. **Open the copied script and edit the three constants marked "EDIT
-   THESE" near the top** - they need to point at *your* birdapp, not the
-   original deployment's:
-   - `BIRDAPP_BASE_URL` - wherever your birdapp is actually reachable at
-     (e.g. `http://192.168.1.50:8000` if you haven't set up a domain name).
-   - `BIRDAPP_ENV_PATH` - the filesystem path to *your* birdapp's `.env`
-     file (this script reads credentials from it directly).
-   - `CAMERA_CONFIG_PATH` - the filesystem path to *your* birdapp's
-     `camera_config.json`.
-5. Add `API_USERNAME`/`API_PASSWORD` to birdapp's `.env` if you haven't
-   already (step 2 above) - this script authenticates as that account
-   rather than needing your personal admin login.
-6. Run it whenever you want queued sightings classified:
-   `.venv\Scripts\python.exe run_second_opinion.py --limit 50`
-   (or `.venv/bin/python` on macOS/Linux). Nothing runs it automatically -
-   this is a manual, on-demand step.
+The old laptop SpeciesNet script was retired on 2026-10-20 and lives in
+`_Archive/speciesnet-runner/` for reference only. `API_USERNAME` /
+`API_PASSWORD` in `.env` are no longer needed by anything in this repo.

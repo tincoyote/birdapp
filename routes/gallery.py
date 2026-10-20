@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 from routes.nav import NAV_HTML
+from routes.boxes import BOXES_CSS, BOXES_JS, DBADGE_CSS
 
 router = APIRouter()
 
@@ -42,6 +43,13 @@ async def gallery_page():
             .lightbox-info { color: white; margin-top: 15px; text-align: center; }
             button.resend-classifier { background: #ffc107; color: black; margin-top: 12px; }
             button.resend-classifier:hover { background: #e0a800; }
+            .range-pair { display: flex; gap: 6px; align-items: center; }
+            .range-pair input { width: 100%; }
+            .hint { font-size: 11px; color: #888; margin-top: 3px; }
+            __BOXES_CSS__
+            .bx-wrap { max-width: 90%; }
+            .lightbox .bx-wrap img { max-width: 100%; max-height: 70vh; }
+            __DBADGE_CSS__
         </style>
     </head>
     <body>
@@ -53,6 +61,21 @@ async def gallery_page():
                 <div class="filter-group"><label>Date From</label><input type="date" id="dateFrom"></div>
                 <div class="filter-group"><label>Date To</label><input type="date" id="dateTo"></div>
                 <div class="filter-group"><label>Species</label><select id="species"><option value="">All Species</option></select></div>
+                <div class="filter-group"><label>Birds in photo</label>
+                    <select id="birds">
+                        <option value="">Any</option>
+                        <option value="1">Exactly 1</option>
+                        <option value="2">2 or more</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>AIY confidence: <span id="confLabel">0% - 100%</span></label>
+                    <div class="range-pair">
+                        <input type="range" id="confMin" min="0" max="100" value="0" oninput="syncConf()">
+                        <input type="range" id="confMax" min="0" max="100" value="100" oninput="syncConf()">
+                    </div>
+                    <div class="hint">Of the photo's best-detected bird. Low = worth a second look.</div>
+                </div>
                 <div class="filter-group"><label>Group By</label>
                     <select id="groupBy" onchange="renderGallery()">
                         <option value="none">None</option>
@@ -76,15 +99,17 @@ async def gallery_page():
             <span class="lightbox-close" onclick="closeLightbox()">&times;</span>
             <button class="lightbox-nav" style="left:20px;" onclick="navLightbox(-1)">&#8592;</button>
             <button class="lightbox-nav" style="right:20px;" onclick="navLightbox(1)">&#8594;</button>
-            <img id="lightboxImg">
+            <div class="bx-wrap"><img id="lightboxImg"></div>
             <div class="lightbox-info">
                 <div id="lightboxCommon" style="font-size:20px; font-weight:600;"></div>
                 <div id="lightboxMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
+                <div class="bx-toggle" onclick="toggleBoxes(document.getElementById('lightboxImg'), flatList[lightboxIndex].detections)">show / hide boxes (b)</div>
                 <button class="resend-classifier" onclick="resendToClassifier()">Resend to Classifier</button>
             </div>
         </div>
 
         <script>
+            __BOXES_JS__
             let allSightings = [], flatList = [], lightboxIndex = -1;
             let speciesLabels = {};
 
@@ -113,6 +138,20 @@ async def gallery_page():
                 return (latin && common !== latin) ? `${common} (${latin})` : common;
             }
 
+            // Every species in a photo (2026-10-20): the per-bird names when the
+            // detector found birds, else the single photo-level name.
+            function speciesNames(s) {
+                const names = new Set(countedBirds(s).map(birdName));
+                if (!names.size) names.add(commonName(s));
+                return [...names];
+            }
+            function photoLabel(s) { return birdSummary(s) || commonName(s); }
+            function syncConf() {
+                let a = +document.getElementById('confMin').value, b = +document.getElementById('confMax').value;
+                if (a > b) [a, b] = [b, a];
+                document.getElementById('confLabel').textContent = `${a}% - ${b}%`;
+            }
+
             function localTime(isoTimestamp) {
                 // main.py stores datetime.now().isoformat() - naive local
                 // time, no UTC/'Z' suffix. A date-time string with no
@@ -132,7 +171,13 @@ async def gallery_page():
                 const dateTo = document.getElementById('dateTo').value;
                 const species = document.getElementById('species').value;
 
-                const params = new URLSearchParams({ review_status: 'approved', page: 1, limit: 200 });
+                const params = new URLSearchParams({ review_status: 'approved', page: 1, limit: 500 });
+                let cMin = +document.getElementById('confMin').value, cMax = +document.getElementById('confMax').value;
+                if (cMin > cMax) [cMin, cMax] = [cMax, cMin];
+                if (cMin > 0 || cMax < 100) { params.append('confidence_min', cMin / 100); params.append('confidence_max', cMax / 100); }
+                const birds = document.getElementById('birds').value;
+                if (birds === '1') { params.append('animal_min', 1); params.append('animal_max', 1); }
+                if (birds === '2') params.append('animal_min', 2);
                 if (dateFrom) params.append('date_from', dateFrom);
                 if (dateTo) params.append('date_to', dateTo);
                 if (species) params.append('species', species);
@@ -140,7 +185,8 @@ async def gallery_page():
                 const res = await fetch(`/api/sightings?${params}`);
                 const data = await res.json();
                 allSightings = data.items;
-                document.getElementById('pageInfo').textContent = `${allSightings.length} sighting${allSightings.length === 1 ? '' : 's'}`;
+                document.getElementById('pageInfo').textContent = `${allSightings.length} sighting${allSightings.length === 1 ? '' : 's'}`
+                    + (data.total > allSightings.length ? ` (newest ${allSightings.length} of ${data.total} - narrow the filters to see older ones)` : '');
                 renderGallery();
             }
 
@@ -149,12 +195,16 @@ async def gallery_page():
                 document.getElementById('dateTo').value = '';
                 document.getElementById('species').value = '';
                 document.getElementById('groupBy').value = 'none';
+                document.getElementById('birds').value = '';
+                document.getElementById('confMin').value = 0;
+                document.getElementById('confMax').value = 100;
+                syncConf();
                 applyFilters();
             }
 
             function cardHtml(s, flatIdx) {
-                const common = commonName(s);
-                return `<div class="gallery-item"><img src="/images/${s.filename}" onclick="openLightbox(${flatIdx})"><div class="gallery-label">${common}<br><small>${s.timestamp.split('T')[0]}</small></div></div>`;
+                const label = photoLabel(s);
+                return `<div class="gallery-item"><img src="/images/${s.filename}" loading="lazy" onclick="openLightbox(${flatIdx})"><div class="gallery-label">${label}<br><small>${s.timestamp.split('T')[0]}</small></div></div>`;
             }
 
             function renderGallery() {
@@ -179,9 +229,12 @@ async def gallery_page():
 
                 const groups = {};
                 allSightings.forEach(s => {
-                    const key = groupBy === 'date' ? s.timestamp.split('T')[0] : commonName(s);
-                    if (!groups[key]) groups[key] = [];
-                    groups[key].push(s);
+                    // A photo with several species appears under each of them
+                    const keys = groupBy === 'date' ? [s.timestamp.split('T')[0]] : speciesNames(s);
+                    keys.forEach(key => {
+                        if (!groups[key]) groups[key] = [];
+                        groups[key].push(s);
+                    });
                 });
 
                 const keys = Object.keys(groups).sort((a, b) => groupBy === 'date' ? b.localeCompare(a) : a.localeCompare(b));
@@ -215,10 +268,13 @@ async def gallery_page():
             function renderLightbox() {
                 if (lightboxIndex < 0 || lightboxIndex >= flatList.length) { closeLightbox(); return; }
                 const s = flatList[lightboxIndex];
-                document.getElementById('lightboxImg').src = `/images/${s.filename}`;
-                document.getElementById('lightboxCommon').textContent = commonName(s);
+                const img = document.getElementById('lightboxImg');
+                img.src = `/images/${s.filename}`;
+                drawBoxes(img, s.detections);
+                document.getElementById('lightboxCommon').textContent = photoLabel(s);
+                const conf = s.confidence_aiy != null ? `AIY ${(s.confidence_aiy * 100).toFixed(0)}% - ` : '';
                 document.getElementById('lightboxMeta').textContent =
-                    `${(s.confidence_aiy * 100).toFixed(0)}% - ${s.timestamp.split('T')[0]} ${localTime(s.timestamp)} (${lightboxIndex + 1} of ${flatList.length})`;
+                    `${conf}${s.timestamp.split('T')[0]} ${localTime(s.timestamp)} (${lightboxIndex + 1} of ${flatList.length})`;
             }
 
             function navLightbox(delta) {
@@ -250,7 +306,9 @@ async def gallery_page():
                 if (e.key === 'ArrowLeft') navLightbox(-1);
                 else if (e.key === 'ArrowRight') navLightbox(1);
                 else if (e.key === 'Escape') closeLightbox();
+                else if (e.key === 'b' && lightboxIndex >= 0) toggleBoxes(document.getElementById('lightboxImg'), flatList[lightboxIndex].detections);
             });
+            ['birds', 'confMin', 'confMax'].forEach(id => document.getElementById(id).addEventListener('change', applyFilters));
 
             // /gallery?species=<value> (links from the Stats page) preselects
             // that species. Set after loadSpecies() so the option exists.
@@ -263,5 +321,6 @@ async def gallery_page():
     </body>
     </html>
     """
-    html = html.replace("__NAV__", NAV_HTML)
+    html = (html.replace("__NAV__", NAV_HTML).replace("__BOXES_CSS__", BOXES_CSS)
+                .replace("__DBADGE_CSS__", DBADGE_CSS).replace("__BOXES_JS__", BOXES_JS))
     return HTMLResponse(html)

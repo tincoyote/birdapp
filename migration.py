@@ -162,6 +162,82 @@ def migrate_v5_to_v6(db_path):
     conn.close()
 
 
+def migrate_v6_to_v7(db_path):
+    """MegaDetector + per-bird AIY (2026-10-20, docs/PLAN-detector.md).
+
+    New `detections` table: one row per animal/person/vehicle MegaDetector
+    finds in a photo, so a photo can hold several birds of different
+    species. bbox is normalized (0-1) x, y, w, h of the full frame.
+    species_confirmed/_source are the per-bird human name, same format as
+    sightings.species_confirmed ("Common (Latin)" or a custom string).
+
+    New sightings columns summarise the detections for Manage's filters:
+    detect_status ('pending' -> 'done'/'failed'), animal_count,
+    person_count, max_det_conf (best animal detection, 0 if none),
+    detector_model, detected_at.
+
+    A trigger removes a sighting's detections when the sighting row is
+    deleted, so every existing delete path (both trash-empty endpoints)
+    stays correct without being edited.
+
+    One-time backfill: when the detect_status column is first added, every
+    existing sighting is marked 'pending', so the worker re-runs the
+    current photos automatically after deploy (newest first). Guarded by
+    the column check, so it never re-queues anything on later restarts."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS detections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sighting_id INTEGER NOT NULL,
+            idx INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            det_conf REAL NOT NULL,
+            x REAL, y REAL, w REAL, h REAL,
+            species_aiy TEXT,
+            confidence_aiy REAL,
+            common_name TEXT,
+            species_confirmed TEXT,
+            species_confirmed_source TEXT,
+            created_at TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_detections_sighting ON detections(sighting_id)")
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_sightings_delete_detections
+        AFTER DELETE ON sightings
+        BEGIN
+            DELETE FROM detections WHERE sighting_id = OLD.id;
+        END
+    """)
+
+    cursor.execute("PRAGMA table_info(sightings)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    first_time = "detect_status" not in existing_cols
+    if first_time:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN detect_status TEXT DEFAULT 'pending'")
+    if "animal_count" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN animal_count INTEGER")
+    if "person_count" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN person_count INTEGER")
+    if "max_det_conf" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN max_det_conf REAL")
+    if "detector_model" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN detector_model TEXT")
+    if "detected_at" not in existing_cols:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN detected_at TEXT")
+    if first_time:
+        cursor.execute("UPDATE sightings SET detect_status = 'pending'")
+        # SpeciesNet wrote cats as bare 'Felis catus'; Species Queue's Cat
+        # button writes 'Domestic Cat (Felis catus)'. One name, one group.
+        cursor.execute("UPDATE sightings SET species_confirmed = 'Domestic Cat (Felis catus)' "
+                       "WHERE species_confirmed = 'Felis catus'")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sightings_detect_status ON sightings(detect_status)")
+
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else "/app/data/birds.db"
@@ -170,4 +246,5 @@ if __name__ == "__main__":
     migrate_v3_to_v4(path)
     migrate_v4_to_v5(path)
     migrate_v5_to_v6(path)
+    migrate_v6_to_v7(path)
     print(f"Migration complete: {path}")

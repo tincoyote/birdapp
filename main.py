@@ -8,9 +8,9 @@ from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Query, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
-from migration import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4, migrate_v4_to_v5, migrate_v5_to_v6
-from PIL import Image
-import tflite_runtime.interpreter as tflite
+from migration import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4, migrate_v4_to_v5, migrate_v5_to_v6, migrate_v6_to_v7
+import aiy
+import detector
 from routes.nav import NAV_HTML
 
 app = FastAPI()
@@ -163,40 +163,13 @@ migrate_v2_to_v3(DB_PATH)
 migrate_v3_to_v4(DB_PATH)
 migrate_v4_to_v5(DB_PATH)
 migrate_v5_to_v6(DB_PATH)
+migrate_v6_to_v7(DB_PATH)
 
-# --- AIY (Google) bird classifier: loads once at startup, fails soft if files are missing ---
-aiy_interpreter = None
-aiy_labels = {}
-aiy_input_details = None
-aiy_output_details = None
-
-
-def load_aiy_model():
-    global aiy_interpreter, aiy_labels, aiy_input_details, aiy_output_details
-    try:
-        aiy_interpreter = tflite.Interpreter(model_path=AIY_MODEL_PATH)
-        aiy_interpreter.allocate_tensors()
-        aiy_input_details = aiy_interpreter.get_input_details()
-        aiy_output_details = aiy_interpreter.get_output_details()
-        with open(AIY_LABELS_PATH, newline='', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if not row:
-                    continue
-                try:
-                    idx = int(row[0])
-                except ValueError:
-                    continue  # skip a header row if the CSV has one
-                aiy_labels[idx] = row[1] if len(row) > 1 else str(idx)
-        logger.info(
-            "AIY bird model loaded: %d labels, input shape %s, dtype %s",
-            len(aiy_labels), aiy_input_details[0]['shape'], aiy_input_details[0]['dtype']
-        )
-    except Exception as e:
-        logger.error("Failed to load AIY model (classification will be skipped): %s", e)
-
-
-load_aiy_model()
+# --- AIY (Google) bird classifier: loads once at startup, fails soft if files
+# are missing. Lives in aiy.py since 2026-10-20 so the MegaDetector worker
+# thread can share it (with a lock - TFLite interpreters aren't thread-safe).
+aiy.load(AIY_MODEL_PATH, AIY_LABELS_PATH)
+aiy_labels = aiy.labels
 
 # --- Scientific -> common name mapping. The AIY labelmap only ships scientific
 # names (id,name) with no common-name column, so this is a separately-built
@@ -222,61 +195,22 @@ def load_common_names():
 load_common_names()
 
 def classify_aiy(image_path):
-    """Run the Google AIY bird classifier. Returns (species, confidence) or (None, None) if unavailable.
-    Reads the model's own input dtype at runtime instead of assuming float vs. quantized,
-    so this adapts correctly whether the model turns out to be float32 or uint8 quantized."""
-    if aiy_interpreter is None:
-        return None, None
-    try:
-        _, height, width, _ = aiy_input_details[0]['shape']
-        img = Image.open(image_path).convert("RGB")
-        # Crop to the birdbath area before resizing, so the bird gets the
-        # classifier's full input resolution instead of sharing it with the
-        # driveway/street that surround it in the full wide-angle frame.
-        img = img.crop(CROP_BOX)
-        # Pad to square before resizing, rather than resizing straight to
-        # the model's (width, height) - CROP_BOX is chosen for framing
-        # reasons (motion coverage, keeping the driveway out) and has never
-        # been square, but the model's actual input is 224x224. A direct
-        # .resize() stretches non-uniformly to fit a square target, and
-        # discovered 2026-09-21: a 900x400 crop resized straight to 224x224
-        # was compressing horizontally ~2.25x more than vertically, visibly
-        # squashing any bird sideways before the model ever saw it - AIY
-        # calling "background" far more often even on clear, well-framed
-        # shots was the symptom. Padding to a square canvas first (black
-        # bars on whichever axis is shorter) means the resize afterward is
-        # a uniform scale with no distortion, regardless of CROP_BOX's
-        # shape - decouples framing decisions from this entirely, so a
-        # future crop box change can't reintroduce the same problem.
-        crop_w, crop_h = img.size
-        side = max(crop_w, crop_h)
-        padded = Image.new("RGB", (side, side), (0, 0, 0))
-        padded.paste(img, ((side - crop_w) // 2, (side - crop_h) // 2))
-        img = padded.resize((width, height))
-        arr = np.array(img)
+    """Full-frame AIY (cropped to CROP_BOX). Returns (species, confidence) or
+    (None, None). Since 2026-10-20 this is only the quick first guess at
+    capture: the detector worker replaces it with AIY run on the best
+    bird's own crop, which is far more accurate (a bird is only ~17-46 px of
+    AIY's 224 px input on the full frame)."""
+    return aiy.classify_file(image_path, CROP_BOX)
 
-        input_dtype = aiy_input_details[0]['dtype']
-        if input_dtype == np.float32:
-            input_data = np.expand_dims(arr.astype(np.float32) / 255.0, axis=0)
-        else:
-            input_data = np.expand_dims(arr.astype(input_dtype), axis=0)
 
-        aiy_interpreter.set_tensor(aiy_input_details[0]['index'], input_data)
-        aiy_interpreter.invoke()
-        output = aiy_interpreter.get_tensor(aiy_output_details[0]['index'])[0]
+# --- MegaDetector worker (detector.py). Settings live in the "detector"
+# section of camera_config.json; DEFAULTS in detector.py document each one.
+DETECTOR_CONFIG = detector.load_config(_camera_config)
 
-        output_dtype = aiy_output_details[0]['dtype']
-        if output_dtype != np.float32:
-            scale, zero_point = aiy_output_details[0]['quantization']
-            output = (output.astype(np.float32) - zero_point) * scale if scale else output.astype(np.float32)
 
-        top_idx = int(np.argmax(output))
-        confidence = float(output[top_idx])
-        species = aiy_labels.get(top_idx, f"Unknown (class {top_idx})")
-        return species, confidence
-    except Exception as e:
-        logger.exception("AIY classification failed: %s", e)
-        return None, None
+@app.on_event("startup")
+def _start_detector():
+    detector.start(DB_PATH, DATA_DIR, DETECTOR_CONFIG, common_names)
 
 
 def compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat,
@@ -389,11 +323,17 @@ def classify_and_save(image_path, sighting_id):
         species_id_status = "not_queued"
         auto_note = "AIY classification failed at capture" if species_aiy is None else None
 
+    # The CASEs: the detector worker may (rarely) finish first and have
+    # already written the far better per-bird-crop AIY result - don't
+    # clobber it with this full-frame guess.
     cursor.execute(
         """UPDATE sightings
-           SET status = 'identified', species_aiy = ?, confidence_aiy = ?,
+           SET status = 'identified',
+               species_aiy = CASE WHEN detect_status = 'done' THEN species_aiy ELSE ? END,
+               confidence_aiy = CASE WHEN detect_status = 'done' THEN confidence_aiy ELSE ? END,
                species_inat = ?, confidence_inat = ?, classifier_agreement = ?,
-               common_name = ?, review_status = ?, review_updated_at = ?,
+               common_name = CASE WHEN detect_status = 'done' THEN common_name ELSE ? END,
+               review_status = ?, review_updated_at = ?,
                needs_species_id = ?, species_id_status = ?,
                notes = COALESCE(notes, ?)
            WHERE id = ?""",
@@ -505,6 +445,89 @@ def _build_filter_where(f: dict):
     return " AND ".join(where_parts), params
 
 
+# Species match for one photo: its photo-level name (confirmed, else AIY's
+# guess) OR any counted bird in it (per-bird confirmed name, else that bird's
+# AIY guess). A bird a human marked "not a bird" in Species Queue is stored
+# as species_confirmed='__ignore__' and never matches anything. The second half is what lets a photo with two House Finches
+# and a Scrub-Jay show up under both species (2026-10-20).
+_SPECIES_MATCH = """(
+    COALESCE(species_confirmed, species_aiy) = ?
+    OR EXISTS (SELECT 1 FROM detections d WHERE d.sighting_id = sightings.id
+               AND d.category = 'animal' AND d.det_conf >= ?
+               AND COALESCE(d.species_confirmed, '') != '__ignore__'
+               AND COALESCE(d.species_confirmed, d.species_aiy) = ?)
+)"""
+
+
+def _sightings_where(q: dict):
+    """WHERE clause for /api/sightings and /api/sightings/bulk-action, so a
+    bulk action hits exactly the photos the filter shows - across all pages,
+    not just the one on screen.
+
+    Detector filters (all optional):
+      det_conf_min / det_conf_max - best animal detection's confidence, 0-1.
+          A photo with no detection at all has max_det_conf 0, so
+          det_conf_max=0.2 means "nothing the detector would call a bird".
+      animal_min / animal_max     - number of counted birds/animals.
+      detect_status               - pending / done / failed.
+      has_person                  - true: only photos with a person in them.
+    """
+    if q.get("review_status"):
+        parts, params = ["review_status = ?"], [q["review_status"]]
+    else:
+        parts, params = ["is_trashed = ?"], [1 if q.get("is_trashed") else 0]
+    if q.get("species"):
+        parts.append(_SPECIES_MATCH)
+        params += [q["species"], DETECTOR_CONFIG["count_threshold"], q["species"]]
+    cmin, cmax = q.get("confidence_min"), q.get("confidence_max")
+    if (cmin is not None and float(cmin) > 0) or (cmax is not None and float(cmax) < 1):
+        parts.append("confidence_aiy BETWEEN ? AND ?")
+        params += [float(cmin or 0), float(1 if cmax is None else cmax)]
+    for key, col in (("inbox_status", "inbox_status"), ("species_id_status", "species_id_status"),
+                     ("detect_status", "detect_status")):
+        if q.get(key):
+            parts.append(f"{col} = ?")
+            params.append(q[key])
+    if q.get("date_from"):
+        parts.append("timestamp >= ?")
+        params.append(q["date_from"] + "T00:00:00")
+    if q.get("date_to"):
+        parts.append("timestamp <= ?")
+        params.append(q["date_to"] + "T23:59:59")
+    dmin, dmax = q.get("det_conf_min"), q.get("det_conf_max")
+    if (dmin is not None and float(dmin) > 0) or (dmax is not None and float(dmax) < 1):
+        parts.append("detect_status = 'done' AND COALESCE(max_det_conf, 0) BETWEEN ? AND ?")
+        params += [float(dmin or 0), float(1 if dmax is None else dmax)]
+    if q.get("animal_min") is not None:
+        parts.append("detect_status = 'done' AND COALESCE(animal_count, 0) >= ?")
+        params.append(int(q["animal_min"]))
+    if q.get("animal_max") is not None:
+        parts.append("detect_status = 'done' AND COALESCE(animal_count, 0) <= ?")
+        params.append(int(q["animal_max"]))
+    if q.get("has_person") in (True, "true", "1", 1):
+        parts.append("COALESCE(person_count, 0) > 0")
+    return " AND ".join(parts), params
+
+
+def _attach_detections(cursor, items):
+    """Add each photo's detections (boxes + per-bird names) to its dict."""
+    if not items:
+        return
+    by_id = {it["id"]: it for it in items}
+    for it in items:
+        it["detections"] = []
+    marks = ",".join("?" * len(by_id))
+    cursor.execute(f"""SELECT id, sighting_id, idx, category, det_conf, x, y, w, h, species_aiy,
+                              confidence_aiy, common_name, species_confirmed, species_confirmed_source
+                       FROM detections WHERE sighting_id IN ({marks}) ORDER BY sighting_id, idx""",
+                   list(by_id))
+    thr = DETECTOR_CONFIG["count_threshold"]
+    for r in cursor.fetchall():
+        d = dict(r)
+        d["counted"] = d["category"] == "animal" and d["det_conf"] >= thr
+        by_id[d["sighting_id"]]["detections"].append(d)
+
+
 @app.get("/api/sightings")
 async def list_sightings(
     confidence_min: float = Query(0.0, ge=0, le=1),
@@ -516,64 +539,95 @@ async def list_sightings(
     species_id_status: str = Query(None),
     review_status: str = Query(None),
     is_trashed: bool = Query(False),
+    det_conf_min: float = Query(None, ge=0, le=1),
+    det_conf_max: float = Query(None, ge=0, le=1),
+    animal_min: int = Query(None, ge=0),
+    animal_max: int = Query(None, ge=0),
+    detect_status: str = Query(None),
+    has_person: bool = Query(False),
     sort_by: str = Query("timestamp"),
     page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     username: str = Depends(verify_admin_auth),
 ):
+    # review_status is the primary filter for the manage/gallery/trash
+    # workflow. When provided, it replaces the legacy is_trashed filter
+    # entirely - a 'rejected' review_status IS what trash means now.
+    q = dict(confidence_min=confidence_min, confidence_max=confidence_max, species=species,
+             date_from=date_from, date_to=date_to, inbox_status=inbox_status,
+             species_id_status=species_id_status, review_status=review_status,
+             is_trashed=is_trashed, det_conf_min=det_conf_min, det_conf_max=det_conf_max,
+             animal_min=animal_min, animal_max=animal_max, detect_status=detect_status,
+             has_person=has_person)
+    where_clause, params = _sightings_where(q)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-
-    # review_status is the primary filter for the new manage/gallery/trash workflow.
-    # When provided, it replaces the legacy is_trashed filter entirely - a
-    # 'rejected' review_status IS what trash means now, so filtering by both
-    # would be redundant and could conflict for older rows.
-    if review_status:
-        where_parts = ["review_status = ?"]
-        params = [review_status]
-    else:
-        where_parts = ["is_trashed = ?"]
-        params = [1 if is_trashed else 0]
-
-    if species:
-        where_parts.append("(species_confirmed = ? OR (species_confirmed IS NULL AND species_aiy = ?))")
-        params.extend([species, species])
-    if confidence_min > 0 or confidence_max < 1:
-        where_parts.append("confidence_aiy BETWEEN ? AND ?")
-        params.extend([confidence_min, confidence_max])
-    if inbox_status:
-        where_parts.append("inbox_status = ?")
-        params.append(inbox_status)
-    if species_id_status:
-        where_parts.append("species_id_status = ?")
-        params.append(species_id_status)
-    if date_from:
-        where_parts.append("timestamp >= ?")
-        params.append(date_from + "T00:00:00")
-    if date_to:
-        where_parts.append("timestamp <= ?")
-        params.append(date_to + "T23:59:59")
-
-    where_clause = " AND ".join(where_parts)
-
     cursor.execute(f"SELECT COUNT(*) FROM sightings WHERE {where_clause}", params)
     total = cursor.fetchone()[0]
 
-    # Whitelist sort_by against actual column names - it gets string-interpolated
-    # into the query below, so this isn't optional even though it's a GET param.
-    sort_column = "review_updated_at" if sort_by == "review_updated_at" else "timestamp"
+    # Whitelisted - these get string-interpolated into the query.
+    order = {
+        "review_updated_at": "review_updated_at DESC",
+        "det_conf": "COALESCE(max_det_conf, -1) DESC, timestamp DESC",
+        "det_conf_asc": "COALESCE(max_det_conf, 2) ASC, timestamp DESC",
+        "oldest": "timestamp ASC",
+    }.get(sort_by, "timestamp DESC")
 
     offset = (page - 1) * limit
     cursor.execute(
         f"""SELECT * FROM sightings WHERE {where_clause}
-           ORDER BY is_favorite DESC, {sort_column} DESC
+           ORDER BY is_favorite DESC, {order}
            LIMIT ? OFFSET ?""",
         params + [limit, offset]
     )
-    rows = cursor.fetchall()
+    items = [dict(r) for r in cursor.fetchall()]
+    _attach_detections(cursor, items)
     conn.close()
-    return {"total": total, "page": page, "limit": limit, "items": [dict(r) for r in rows]}
+    return {"total": total, "page": page, "limit": limit, "items": items,
+            "count_threshold": DETECTOR_CONFIG["count_threshold"]}
+
+
+@app.post("/api/sightings/bulk-action")
+async def bulk_action(payload: dict, username: str = Depends(verify_admin_auth)):
+    """Apply one action to EVERY photo matching a filter (same filter keys
+    as GET /api/sightings), not just the page on screen - this is what
+    turns "reject 200 empty photos one at a time" into one click.
+    Body: {"filters": {...}, "action": "reject" | "queue" | "redetect",
+           "expected": <count the page showed>}
+    'expected' guards against the data changing between looking and
+    clicking (e.g. new photos arriving): if the live count differs, nothing
+    happens and the caller is told to refresh."""
+    action = payload.get("action")
+    if action not in ("reject", "queue", "redetect"):
+        raise HTTPException(status_code=400, detail="action must be reject, queue or redetect")
+    where_clause, params = _sightings_where(payload.get("filters") or {})
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM sightings WHERE {where_clause}", params)
+        live = cursor.fetchone()[0]
+        expected = payload.get("expected")
+        if expected is not None and int(expected) != live:
+            return {"done": 0, "matched": live, "stale": True}
+        now = datetime.now().isoformat()
+        if action == "reject":
+            cursor.execute(f"UPDATE sightings SET review_status = 'rejected', review_updated_at = ? "
+                           f"WHERE {where_clause}", [now] + params)
+        elif action == "queue":
+            # Same rule as the single-photo queue endpoint: if detection is
+            # already done there's nothing to wait for - straight to ready.
+            cursor.execute(f"""UPDATE sightings SET needs_species_id = 1,
+                    species_id_status = CASE WHEN detect_status = 'done' THEN 'classified' ELSE 'queued' END
+                    WHERE {where_clause} AND species_id_status != 'confirmed'""", params)
+        else:
+            cursor.execute(f"UPDATE sightings SET detect_status = 'pending' WHERE {where_clause}", params)
+        done = cursor.rowcount
+        conn.commit()
+        return {"done": done, "matched": live, "stale": False}
+    finally:
+        conn.close()
 
 
 @app.post("/api/sightings/delete-filtered")
@@ -678,22 +732,30 @@ async def species_list(review_status: str = Query(None), username: str = Depends
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     if review_status:
-        where = "review_status = ?"
+        where = "sightings.review_status = ?"
         params = (review_status,)
     else:
-        where = "is_trashed = 0"
+        where = "sightings.is_trashed = 0"
         params = ()
     # One entry per photo: the confirmed species if a human set one, else
     # AIY's guess - the same rule /api/sightings' species filter matches on.
     # Previously it UNIONed species_confirmed with species_aiy, so a photo
     # AIY called "House Sparrow" but confirmed as House Finch put BOTH names
     # in Gallery's dropdown, and the sparrow entry matched nothing (2026-09-25).
+    # Since 2026-10-20 also every counted bird's own name, so a photo with a
+    # finch pair and a jay contributes both species - same rule as the
+    # species filter in _sightings_where().
     cursor.execute(f"""
-        SELECT DISTINCT COALESCE(species_confirmed, species_aiy) FROM sightings
+        SELECT COALESCE(species_confirmed, species_aiy) AS sp FROM sightings
         WHERE {where} AND COALESCE(species_confirmed, species_aiy) IS NOT NULL
-          AND COALESCE(species_confirmed, species_aiy) != 'background'
-    """, params)
-    species = [row[0] for row in cursor.fetchall()]
+        UNION
+        SELECT COALESCE(d.species_confirmed, d.species_aiy) FROM detections d
+        JOIN sightings ON sightings.id = d.sighting_id
+        WHERE {where} AND d.category = 'animal' AND d.det_conf >= ?
+          AND COALESCE(d.species_confirmed, '') != '__ignore__'
+          AND COALESCE(d.species_confirmed, d.species_aiy) IS NOT NULL
+    """, params + params + (DETECTOR_CONFIG["count_threshold"],))
+    species = [row[0] for row in cursor.fetchall() if row[0] != 'background']
     conn.close()
     # value = the actual DB value filters compare against (scientific name, or
     # a manually-confirmed name); label = common name where we have one,

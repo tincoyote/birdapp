@@ -36,7 +36,11 @@ async def resend_classifier(sighting_id: int):
     species_id_status - see routes/manage.py) this reset is a no-op on
     those three fields; calling it from Species Queue or Gallery is what
     actually changes them. Increments classification_attempts each time
-    this is called, from any page."""
+    this is called, from any page.
+
+    Since 2026-10-20 it also sets detect_status='pending', so the
+    MegaDetector worker re-finds the birds and re-runs AIY on each crop
+    (the full-frame AIY result below is just the placeholder until then)."""
     from main import DB_PATH, DATA_DIR, classify_aiy, compute_agreement, common_names
 
     conn = sqlite3.connect(DB_PATH)
@@ -59,7 +63,7 @@ async def resend_classifier(sighting_id: int):
            SET species_aiy = ?, confidence_aiy = ?, classifier_agreement = ?,
                common_name = ?, classification_attempts = ?,
                review_status = 'pending_review', species_id_status = 'not_queued',
-               needs_species_id = 0
+               needs_species_id = 0, detect_status = 'pending'
            WHERE id = ?""",
         (species_aiy, confidence_aiy, agreement, common_name, new_attempts, sighting_id)
     )
@@ -106,23 +110,28 @@ async def queue_species_id(sighting_id: int):
     from main import DB_PATH
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT species_id_status FROM sightings WHERE id = ?", (sighting_id,))
+    cursor.execute("SELECT species_id_status, detect_status FROM sightings WHERE id = ?", (sighting_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
         return {"error": "Sighting not found"}
-    current_status = row[0]
+    current_status, detect_status = row
     if current_status == "queued":
         conn.close()
         return {"id": sighting_id, "species_id_status": current_status, "already_in_pipeline": True}
 
+    # 2026-10-20: the "second opinion" is now the in-container detector, not
+    # the laptop. If it has already run, the per-bird names are ready - go
+    # straight to 'classified'. Otherwise 'queued', and the worker promotes
+    # it when it finishes (detector.save_results).
+    new_status = "classified" if detect_status == "done" else "queued"
     cursor.execute(
-        "UPDATE sightings SET needs_species_id = 1, species_id_status = 'queued' WHERE id = ?",
-        (sighting_id,)
+        "UPDATE sightings SET needs_species_id = 1, species_id_status = ? WHERE id = ?",
+        (new_status, sighting_id)
     )
     conn.commit()
     conn.close()
-    return {"id": sighting_id, "species_id_status": "queued", "already_in_pipeline": False}
+    return {"id": sighting_id, "species_id_status": new_status, "already_in_pipeline": False}
 
 
 @router.post("/api/sightings/{sighting_id}/confirm-species")
@@ -149,6 +158,15 @@ async def confirm_species(sighting_id: int, body: dict):
 
     species_confirmed = body.get("species_confirmed")
     species_confirmed_source = body.get("species_confirmed_source")
+    # Optional per-bird names (2026-10-20):
+    #   "birds": [{"detection_id": 12, "species_confirmed": "...", "source": "aiy"}, ...]
+    # Each named bird is saved on its detections row. The photo-level
+    # species_confirmed (what the family page and older views use) defaults
+    # to the first bird's name when the caller doesn't send one.
+    birds = [b for b in (body.get("birds") or []) if b.get("detection_id") and b.get("species_confirmed")]
+    if not species_confirmed and birds:
+        species_confirmed = birds[0]["species_confirmed"]
+        species_confirmed_source = species_confirmed_source or birds[0].get("source")
     if not species_confirmed:
         return {"error": "species_confirmed is required"}
 
@@ -158,6 +176,12 @@ async def confirm_species(sighting_id: int, body: dict):
     if not cursor.fetchone():
         conn.close()
         return {"error": "Sighting not found"}
+    for b in birds:
+        # sighting_id in the WHERE: a detection id from another photo is ignored
+        cursor.execute(
+            "UPDATE detections SET species_confirmed = ?, species_confirmed_source = ? "
+            "WHERE id = ? AND sighting_id = ?",
+            (b["species_confirmed"], b.get("source"), int(b["detection_id"]), sighting_id))
 
     cursor.execute(
         """UPDATE sightings

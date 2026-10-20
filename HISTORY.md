@@ -182,6 +182,47 @@ mismatches between them. The fix: display and filter should always use the
 identical computed expression, never two different columns that are assumed
 to correspond.
 
+## Retiring SpeciesNet (2026-10-20)
+
+The two-classifier design (AIY on the NAS, SpeciesNet on the laptop as a
+second opinion) was measured against a month of real data: 350 photos,
+212 named. SpeciesNet named **16** of them - 14 squirrels and 2 cats - and
+**zero birds**. For birds it answered "bird" 155 times and "animal" 35
+times; most of what the agreement column called "agreed" was just "bird"
+agreeing with AIY's species. Meanwhile AIY run on SpeciesNet's *crop* of
+the bird had named 180 correctly, and the human typed 16.
+
+So the useful part of SpeciesNet was never its classifier - it was the
+MegaDetector inside it, finding the bird so AIY could look at just the
+bird. That detector now runs on the NAS, in the container, on every photo
+(`detector.py`), and the laptop step is gone. Two things came along for
+free:
+
+- **Every bird, not just one.** The laptop script cropped only the first
+  detection (`dets[0]`), so a photo with a finch pair and a jay got one
+  name. Now every detection gets its own row and its own AIY name.
+- **A real bird/no-bird signal for Manage.** Full-frame AIY confidence had
+  been measured useless for this back in September; the detector's
+  confidence is exactly that signal, so Manage can now filter "no bird
+  found" and reject it all in one click.
+
+What the detector can't do: tell a squirrel from a bird (it only knows
+animal / person / vehicle), and AIY only knows birds - it gave squirrels
+confident bird names (Mourning Dove 0.91, House Sparrow 0.90). At ~16
+mammal photos a month, one-click Squirrel/Cat buttons in Species Queue were
+cheaper than keeping a second model.
+
+**Lesson**: measure what each stage actually contributes before adding or
+keeping one. A component can look essential (it was "the second opinion")
+while all the value comes from a sub-part of it (the detector).
+
+**Lesson**: the same counting check exposed a quieter gap - four photos
+were hand-typed "Orange-crowned Warbler" when AIY had already said
+*Oreothlypis celata* at 0.92-0.96. AIY was right; the species just had no
+common name in `common_names.csv`, so the dropdown never offered it. 83 such
+gaps (Cooper's Hawk, Nuttall's Woodpecker, Ruby-crowned Kinglet...) were
+filled at the same time.
+
 ## General
 
 Across all of the above, the recurring pattern worth naming explicitly:

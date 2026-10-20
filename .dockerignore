@@ -14,3 +14,7 @@ data/
 __pycache__/
 *.pyc
 *.syno.tar
+
+# MegaDetector weights are downloaded in the Dockerfile; a local copy
+# would just duplicate 281 MB in the build context
+models/*.pt

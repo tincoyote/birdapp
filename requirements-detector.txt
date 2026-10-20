@@ -1,0 +1,22 @@
+# MegaDetector inference dependencies (2026-10-20). Installed by the
+# Dockerfile AFTER CPU-only torch/torchvision, and yolov5 itself is then
+# installed with --no-deps. Why: yolov5's own dependency list drags in
+# training/cloud extras (tensorboard, roboflow, boto3, sahi, a CUDA build
+# of torch from PyPI...) that inference never touches, and their newest
+# versions want numpy 2, which would break tflite-runtime (AIY).
+# These are exactly the modules yolov5's inference path imports, pinned to
+# releases that work with numpy 1.26 on Python 3.11.
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+pandas==2.2.3
+matplotlib==3.9.2
+seaborn==0.13.2
+ipython==8.29.0
+PyYAML==6.0.2
+requests==2.32.3
+psutil==6.1.0
+tqdm==4.67.1
+gitpython==3.1.43
+setuptools==75.6.0
+scipy==1.14.1
+thop==0.1.1.post2209072238
