@@ -182,6 +182,10 @@ async def confirm_species(sighting_id: int, body: dict):
             "UPDATE detections SET species_confirmed = ?, species_confirmed_source = ? "
             "WHERE id = ? AND sighting_id = ?",
             (b["species_confirmed"], b.get("source"), int(b["detection_id"]), sighting_id))
+    if birds:
+        import detector
+        from main import DETECTOR_CONFIG, common_names
+        detector.recompute_summary(cursor, sighting_id, DETECTOR_CONFIG["count_threshold"], common_names)
 
     cursor.execute(
         """UPDATE sightings
@@ -199,6 +203,44 @@ async def confirm_species(sighting_id: int, body: dict):
         "species_id_status": "confirmed", "review_status": "approved"
     }
 
+
+
+@router.post("/api/detections/{detection_id}/exclude")
+async def exclude_detection(detection_id: int, body: dict):
+    """Exclude one box from a photo's results, or put it back.
+    Body: {"excluded": true|false}. An excluded box (a swinging watering can
+    the detector calls a person, a leaf it calls a bird) is kept but no
+    longer counts: the photo's bird/person counts, best-detection % and
+    photo-level AIY guess are recomputed without it, so Manage's filters
+    and the Gallery stop seeing it. Saved immediately - no "post" needed.
+    Re-running detection (Resend) starts the photo fresh."""
+    import detector
+    from main import DB_PATH, DETECTOR_CONFIG, common_names, _attach_detections
+    excluded = bool(body.get("excluded", True))
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        row = cur.execute("SELECT sighting_id, species_confirmed FROM detections WHERE id = ?",
+                          (detection_id,)).fetchone()
+        if not row:
+            return {"error": "Detection not found"}
+        sid = row["sighting_id"]
+        if excluded:
+            cur.execute("UPDATE detections SET species_confirmed = ?, species_confirmed_source = 'excluded' "
+                        "WHERE id = ?", (detector.IGNORE, detection_id))
+        elif row["species_confirmed"] == detector.IGNORE:
+            cur.execute("UPDATE detections SET species_confirmed = NULL, species_confirmed_source = NULL "
+                        "WHERE id = ?", (detection_id,))
+        detector.recompute_summary(cur, sid, DETECTOR_CONFIG["count_threshold"], common_names)
+        conn.commit()
+        s = dict(cur.execute("SELECT id, animal_count, person_count, max_det_conf, species_aiy, "
+                             "confidence_aiy, common_name, detect_status FROM sightings WHERE id = ?",
+                             (sid,)).fetchone())
+        _attach_detections(cur, [s])
+        return s
+    finally:
+        conn.close()
 
 
 @router.post("/api/sightings/{sighting_id}/second-opinion")

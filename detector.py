@@ -188,6 +188,30 @@ def save_results(db_path, sighting_id, dets, cfg, common_names, model_name):
         conn.close()
 
 
+IGNORE = "__ignore__"  # detections.species_confirmed value for a box a human excluded
+
+
+def recompute_summary(cur, sighting_id, thr, common_names):
+    """Re-derive a sighting's summary columns from its detections, leaving
+    out boxes a human excluded (a swinging watering can the detector calls
+    a person, a leaf it calls an animal). Used after a box is excluded or
+    re-included, and after Species Queue posts names."""
+    rows = cur.execute(
+        "SELECT category, det_conf, species_aiy, confidence_aiy, COALESCE(species_confirmed, '') "
+        "FROM detections WHERE sighting_id = ? ORDER BY det_conf DESC", (sighting_id,)).fetchall()
+    live = [r for r in rows if r[4] != IGNORE]
+    animals = [r for r in live if r[0] == "animal" and r[1] >= thr]
+    people = [r for r in live if r[0] == "person" and r[1] >= thr]
+    max_conf = max((r[1] for r in live if r[0] == "animal"), default=0.0)
+    cur.execute("UPDATE sightings SET animal_count = ?, person_count = ?, max_det_conf = ? WHERE id = ?",
+                (len(animals), len(people), max_conf, sighting_id))
+    best = next((r for r in animals if r[2]), None)
+    if best:
+        cur.execute("UPDATE sightings SET species_aiy = ?, confidence_aiy = ?, common_name = ? "
+                    "WHERE id = ? AND species_id_status != 'confirmed'",
+                    (best[2], best[3], common_names.get(best[2]), sighting_id))
+
+
 def mark_failed(db_path, sighting_id, message):
     conn = sqlite3.connect(db_path, timeout=30)
     try:

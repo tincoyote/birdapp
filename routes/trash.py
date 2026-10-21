@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 from routes.nav import NAV_HTML
+from routes.boxes import BOXES_CSS, BOXES_JS, DBADGE_CSS
 
 router = APIRouter()
 
@@ -26,7 +27,14 @@ async def trash_page():
             table { width: 100%; border-collapse: collapse; }
             th { background: #f8f9fa; padding: 12px; text-align: left; font-weight: 600; border-bottom: 2px solid #dee2e6; }
             td { padding: 12px; border-bottom: 1px solid #dee2e6; }
-            .thumb { width: 50px; height: 50px; object-fit: cover; border-radius: 4px; }
+            .thumb { width: 96px; height: 54px; object-fit: cover; border-radius: 4px; cursor: pointer; display: block; }
+            .lightbox { display: none; position: fixed; z-index: 999; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.92); align-items: center; justify-content: center; flex-direction: column; }
+            .lightbox.active { display: flex; }
+            .lb-nav { position: absolute; top: 50%; transform: translateY(-50%); font-size: 28px; padding: 14px 18px; background: rgba(255,255,255,0.15); color: white; }
+            __BOXES_CSS__
+            .bx-wrap { max-width: 90%; }
+            .lightbox .bx-wrap img { max-width: 100%; max-height: 70vh; }
+            __DBADGE_CSS__
             button { padding: 10px 16px; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; }
             .btn-danger { background: #dc3545; color: white; }
             .btn-danger:hover { background: #c82333; }
@@ -80,8 +88,25 @@ async def trash_page():
             </div>
         </div>
         
+        <div class="lightbox" id="lightbox">
+            <span onclick="closeLightbox()" style="position:absolute; top:20px; right:30px; color:white; font-size:28px; cursor:pointer; user-select:none;">&times;</span>
+            <button class="lb-nav" style="left:20px;" onclick="navLightbox(-1)">&#8592;</button>
+            <button class="lb-nav" style="right:20px;" onclick="navLightbox(1)">&#8594;</button>
+            <div class="bx-wrap"><img id="lbImg"></div>
+            <div style="color:white; margin-top:14px; text-align:center;">
+                <div id="lbName" style="font-size:18px; font-weight:600;"></div>
+                <div id="lbMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
+                <div class="bx-toggle" onclick="toggleBoxes(document.getElementById('lbImg'), rows[lbIndex], {pct: 'aiy'})">show / hide boxes (b)</div>
+            </div>
+            <div class="controls" style="margin-top:14px;">
+                <button class="btn-warning" onclick="restoreCurrent()">Restore (r)</button>
+            </div>
+        </div>
+
         <script>
+            __BOXES_JS__
             let speciesLabels = {};
+            let rows = [], lbIndex = -1;
 
             async function loadSpecies() {
                 const res = await fetch('/api/species-list?review_status=rejected');
@@ -115,16 +140,18 @@ async def trash_page():
                 
                 const tbody = document.getElementById('tbody');
                 tbody.innerHTML = '';
+                rows = data.items;
                 if (data.items.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:40px; color:#999;">Nothing here</td></tr>';
                     document.getElementById('trashCount').textContent = '';
                     return;
                 }
                 
-                data.items.forEach(s => {
+                rows = data.items;
+                data.items.forEach((s, idx) => {
                     const tr = document.createElement('tr');
                     const rejectedDate = (s.review_updated_at || s.timestamp || '').split('T')[0];
-                    tr.innerHTML = `<td><img src="/images/${s.filename}" class="thumb"></td><td>${commonName(s)}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${rejectedDate}</small></td><td><button class="btn-warning" onclick="restoreItem(${s.id})">Restore</button></td>`;
+                    tr.innerHTML = `<td><img src="/images/${s.filename}" class="thumb" loading="lazy" onclick="openLightbox(${idx})" title="Click to view"></td><td>${commonName(s)}</td><td>${(s.confidence_aiy * 100).toFixed(0)}%</td><td><small>${rejectedDate}</small></td><td><button class="btn-warning" onclick="restoreItem(${s.id})">Restore</button></td>`;
                     tbody.appendChild(tr);
                 });
                 
@@ -138,6 +165,45 @@ async def trash_page():
                 applyFilters();
             }
             
+            // ---------- viewer (2026-10-20): check a photo before restoring ----------
+            function photoName(s) { return birdSummary(s) || commonName(s); }
+            function openLightbox(idx) { lbIndex = idx; renderLightbox(); document.getElementById('lightbox').classList.add('active'); }
+            function closeLightbox() { document.getElementById('lightbox').classList.remove('active'); lbIndex = -1; }
+            function navLightbox(delta) {
+                if (!rows.length) return;
+                lbIndex = (lbIndex + delta + rows.length) % rows.length;
+                renderLightbox();
+            }
+            function renderLightbox() {
+                if (lbIndex < 0 || lbIndex >= rows.length) { closeLightbox(); return; }
+                const s = rows[lbIndex];
+                const img = document.getElementById('lbImg');
+                img.src = `/images/${s.filename}`;
+                drawBoxes(img, s, { pct: 'aiy' });
+                document.getElementById('lbName').textContent = photoName(s);
+                const rej = (s.review_updated_at || '').replace('T', ' ').slice(0, 16);
+                document.getElementById('lbMeta').innerHTML =
+                    `${detectorBadge(s)} &nbsp;taken ${s.timestamp.replace('T', ' ').slice(0, 16)} &middot; rejected ${rej} (${lbIndex + 1} of ${rows.length})`;
+            }
+            async function restoreCurrent() {
+                if (lbIndex < 0) return;
+                const s = rows[lbIndex];
+                await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'pending_review'}) });
+                showInfo('Restored to review');
+                rows.splice(lbIndex, 1);
+                if (lbIndex >= rows.length) lbIndex = rows.length - 1;
+                renderLightbox();
+                applyFilters().then(() => { if (lbIndex >= 0) renderLightbox(); });
+            }
+            document.addEventListener('keydown', e => {
+                if (!document.getElementById('lightbox').classList.contains('active')) return;
+                if (e.key === 'ArrowLeft') navLightbox(-1);
+                else if (e.key === 'ArrowRight') navLightbox(1);
+                else if (e.key === 'Escape') closeLightbox();
+                else if (e.key === 'r') restoreCurrent();
+                else if (e.key === 'b' && lbIndex >= 0) toggleBoxes(document.getElementById('lbImg'), rows[lbIndex], { pct: 'aiy' });
+            });
+
             async function restoreItem(id) {
                 await fetch(`/api/sightings/${id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'pending_review'}) });
                 showInfo('Restored to review');
@@ -199,5 +265,6 @@ async def trash_page():
     </body>
     </html>
     """
-    html = html.replace("__NAV__", NAV_HTML)
+    html = (html.replace("__NAV__", NAV_HTML).replace("__BOXES_CSS__", BOXES_CSS)
+                .replace("__DBADGE_CSS__", DBADGE_CSS).replace("__BOXES_JS__", BOXES_JS))
     return HTMLResponse(html)

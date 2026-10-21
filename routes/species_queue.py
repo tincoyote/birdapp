@@ -98,13 +98,18 @@ PAGE = r"""
                     <option value="2">2 or more</option>
                     <option value="0">None found</option>
                 </select></div>
+            <div class="fg" style="min-width:220px"><label>Species confidence: <span id="confLabel">0% - 100%</span> <span style="color:#999">(least sure bird)</span></label>
+                <div style="display:flex; gap:6px">
+                    <input type="range" id="fConfMin" min="0" max="100" value="0" oninput="applyView()" style="width:100%">
+                    <input type="range" id="fConfMax" min="0" max="100" value="100" oninput="applyView()" style="width:100%">
+                </div></div>
             <div class="fg"><label>Search name</label><input type="text" id="fSearch" placeholder="finch, Haemorhous..." oninput="applyView()"></div>
             <div class="fg"><label>Sort</label>
                 <select id="fSort" onchange="applyView()">
                     <option value="newest">Newest first</option>
                     <option value="oldest">Oldest first</option>
-                    <option value="aiyconf">AIY confidence, high first</option>
-                    <option value="aiyconf_low">AIY confidence, low first</option>
+                    <option value="aiyconf">Species confidence, high first</option>
+                    <option value="aiyconf_low">Species confidence, low first</option>
                     <option value="name">Name A-Z</option>
                 </select></div>
             <button class="btn-secondary" onclick="clearFilters()">Clear filters</button>
@@ -140,7 +145,7 @@ PAGE = r"""
         let lightboxIndex = -1;
         const selected = new Set();
         // Per-photo edits in the lightbox, kept while you flip between photos:
-        // drafts[sightingId][detectionId] = {name, ignored}
+        // drafts[sightingId][detectionId] = {name}  (exclusions are saved to the server immediately)
         const drafts = {};
 
         const val = id => document.getElementById(id).value;
@@ -152,12 +157,31 @@ PAGE = r"""
         function aiyLabel(d) { return formatWithLatin(d.common_name, d.species_aiy); }
         function birdsOf(r) { return (r.detections || []).filter(d => d.counted); }
         function photoLabel(r) { return birdSummary(r) || r.aiy_label; }
+        // Species confidence of the photo = its LEAST certain bird, so a
+        // confident finch can't hide an unsure jay next to it. Photos with
+        // no bird box fall back to the photo-level AIY guess.
+        function speciesConf(r) {
+            const c = birdsOf(r).map(d => d.confidence_aiy).filter(v => v != null);
+            return c.length ? Math.min(...c) : r.confidence_aiy;
+        }
+        function syncConf() {
+            let a = +val('fConfMin'), b = +val('fConfMax');
+            if (a > b) [a, b] = [b, a];
+            document.getElementById('confLabel').textContent = `${a}% - ${b}%`;
+            return [a, b];
+        }
 
         // ---------- filtering / sorting ----------
         function applyView() {
             const from = val('fDateFrom'), to = val('fDateTo'), st = val('fStatus'), nb = val('fBirds');
             const q = val('fSearch').trim().toLowerCase();
+            const [cMin, cMax] = syncConf();
+            const confOn = cMin > 0 || cMax < 100;
             view = queueData.filter(r => {
+                if (confOn) {
+                    const c = speciesConf(r);
+                    if (c == null || c * 100 < cMin || c * 100 > cMax) return false;
+                }
                 if (from && r.date < from) return false;
                 if (to && r.date > to) return false;
                 if (st && r.species_id_status !== st) return false;
@@ -175,8 +199,8 @@ PAGE = r"""
             const cmp = {
                 newest: (a, b) => b.timestamp.localeCompare(a.timestamp),
                 oldest: (a, b) => a.timestamp.localeCompare(b.timestamp),
-                aiyconf: (a, b) => (b.confidence_aiy ?? -1) - (a.confidence_aiy ?? -1),
-                aiyconf_low: (a, b) => (a.confidence_aiy ?? 2) - (b.confidence_aiy ?? 2),
+                aiyconf: (a, b) => (speciesConf(b) ?? -1) - (speciesConf(a) ?? -1),
+                aiyconf_low: (a, b) => (speciesConf(a) ?? 2) - (speciesConf(b) ?? 2),
                 name: (a, b) => photoLabel(a).localeCompare(photoLabel(b)),
             }[val('fSort')];
             view.sort(cmp);
@@ -187,6 +211,8 @@ PAGE = r"""
 
         function clearFilters() {
             ['fDateFrom', 'fDateTo', 'fStatus', 'fBirds', 'fSearch'].forEach(id => document.getElementById(id).value = '');
+            document.getElementById('fConfMin').value = 0;
+            document.getElementById('fConfMax').value = 100;
             document.getElementById('fSort').value = 'newest';
             applyView();
         }
@@ -283,12 +309,14 @@ PAGE = r"""
         }
 
         function draftFor(r) {
-            if (!drafts[r.id]) {
-                drafts[r.id] = {};
-                birdsOf(r).forEach(d => drafts[r.id][d.id] = { name: aiyLabel(d) === 'background' ? '' : aiyLabel(d), ignored: false });
-                drafts[r.id].photo = { name: r.species_aiy && r.species_aiy !== 'background' ? formatWithLatin(r.common_name, r.species_aiy) : '' };
-            }
-            return drafts[r.id];
+            if (!drafts[r.id]) drafts[r.id] = { photo: { name: r.species_aiy && r.species_aiy !== 'background' ? formatWithLatin(r.common_name, r.species_aiy) : '' } };
+            const dr = drafts[r.id];
+            // Name drafts for every animal box, including excluded ones (so
+            // re-including a box gets its AIY guess back)
+            (r.detections || []).filter(d => d.listed && d.category === 'animal').forEach(d => {
+                if (!dr[d.id]) dr[d.id] = { name: (d.species_aiy && d.species_aiy !== 'background') ? aiyLabel(d) : '' };
+            });
+            return dr;
         }
 
         function quickButtons(sid, did) {
@@ -296,35 +324,48 @@ PAGE = r"""
                 `<button class="btn-mini" onclick="setName(${sid}, '${did}', '${escAttr(full).replace(/'/g, "\\'")}')">${esc(short)}</button>`).join('');
         }
 
+        // Species Queue shows AIY's SPECIES % on the boxes; clicking a box
+        // excludes it (or includes it again) - saved immediately.
+        const boxOpts = { pct: 'aiy', onClick: d => toggleExclude(d.id) };
+
         function renderLightbox() {
             if (lightboxIndex < 0 || lightboxIndex >= view.length) { closeLightbox(); return; }
             const r = view[lightboxIndex];
             const img = document.getElementById('lbImg');
             img.src = `/images/${r.filename}`;
-            drawBoxes(img, r.detections);
+            drawBoxes(img, r, boxOpts);
             const draft = draftFor(r);
-            const birds = birdsOf(r);
+            const listed = listedBoxes(r);
             let panel = `<div class="lb-date">${r.date} &middot; ${detectorBadge(r)} (${lightboxIndex + 1} of ${view.length})
-                <span class="bx-toggle" onclick="toggleBoxes(document.getElementById('lbImg'), view[lightboxIndex].detections)">&nbsp; show / hide boxes (b)</span></div>`;
+                <span class="bx-toggle" onclick="toggleBoxes(document.getElementById('lbImg'), view[lightboxIndex], boxOpts)">&nbsp; show / hide boxes (b) &middot; click a box to exclude it</span></div>`;
 
             if (r.detect_status === 'pending') {
                 panel += `<div class="waiting">Still scanning this photo for birds - you can name it now or wait.</div>`;
             }
-            if (birds.length) {
-                birds.forEach((d, i) => {
-                    const dr = draft[d.id];
-                    const conf = d.confidence_aiy != null ? `AIY ${Math.round(d.confidence_aiy * 100)}%` : 'AIY -';
+            listed.forEach((d, i) => {
+                const exBtn = `<button class="btn-mini ${d.excluded ? 'on' : ''}" onclick="toggleExclude(${d.id})"
+                    title="Leaf, shadow, reflection, watering can...">${d.excluded ? 'Excluded - include' : 'Exclude'}</button>`;
+                if (d.category !== 'animal') {
+                    // People / vehicles: nothing to name, only exclude
                     panel += `<div class="bird-row">
-                        <span class="bird-num">${i + 1}</span>
-                        <input list="nameList" id="name-${d.id}" value="${escAttr(dr.name)}" ${dr.ignored ? 'disabled' : ''}
-                               oninput="drafts[${r.id}][${d.id}].name = this.value" placeholder="Name this bird...">
-                        <span class="aiy-conf">${conf}</span>
-                        ${quickButtons(r.id, d.id)}
-                        <button class="btn-mini ${dr.ignored ? 'on' : ''}" onclick="toggleIgnore(${r.id}, ${d.id})" title="Leaf, shadow, reflection...">Not a bird</button>
-                    </div>`;
-                });
-            } else {
-                // Detector found nothing countable - one name for the whole photo
+                        <span class="bird-num" style="background:${d.excluded ? '#888' : '#ff9800'}">${i + 1}</span>
+                        <span style="flex:1; ${d.excluded ? 'text-decoration:line-through; color:#aaa' : ''}">${esc(d.category)} (detector ${pctText(d.det_conf)})</span>
+                        ${exBtn}</div>`;
+                    return;
+                }
+                const dr = draft[d.id];
+                const conf = d.confidence_aiy != null ? `AIY ${pctText(d.confidence_aiy)}` : 'AIY -';
+                panel += `<div class="bird-row">
+                    <span class="bird-num" style="${d.excluded ? 'background:#888' : ''}">${i + 1}</span>
+                    <input list="nameList" id="name-${d.id}" value="${escAttr(dr.name)}" ${d.excluded ? 'disabled' : ''}
+                           oninput="drafts[${r.id}][${d.id}].name = this.value" placeholder="Name this bird...">
+                    <span class="aiy-conf">${conf}</span>
+                    ${d.excluded ? '' : quickButtons(r.id, d.id)}
+                    ${exBtn}
+                </div>`;
+            });
+            if (!birdsOf(r).length) {
+                // No bird left to name - one name for the whole photo
                 panel += `<div class="bird-row">
                     <input list="nameList" id="name-photo" value="${escAttr(draft.photo.name)}"
                            oninput="drafts[${r.id}].photo.name = this.value" placeholder="No bird found - name it anyway...">
@@ -342,33 +383,35 @@ PAGE = r"""
         function setName(sid, did, name) {
             const dr = drafts[sid];
             if (did === 'photo') dr.photo.name = name;
-            else { dr[did].name = name; dr[did].ignored = false; }
+            else dr[did].name = name;
             renderLightbox();
         }
-        function toggleIgnore(sid, did) {
-            drafts[sid][did].ignored = !drafts[sid][did].ignored;
+
+        async function toggleExclude(detectionId) {
+            const r = view[lightboxIndex];
+            if (!r) return;
+            const d = (r.detections || []).find(x => x.id === detectionId);
+            if (!d) return;
+            if (!(await setExcluded(r, d, !d.excluded))) { showInfo('Could not save that - try again.'); return; }
             renderLightbox();
+            renderGrid();
         }
 
         async function postCurrent() {
             const r = view[lightboxIndex];
             if (!r) return;
             const draft = draftFor(r);
-            const birds = birdsOf(r);
+            const birds = birdsOf(r);   // excluded boxes are already left out
             const body = {};
             if (birds.length) {
                 body.birds = birds.map(d => {
-                    const dr = draft[d.id];
-                    if (dr.ignored) return { detection_id: d.id, species_confirmed: '__ignore__', source: 'ignored' };
-                    const name = dr.name.trim();
+                    const name = (draft[d.id].name || '').trim();
                     return name ? { detection_id: d.id, species_confirmed: name, source: name === aiyLabel(d) ? 'aiy' : 'custom' } : null;
                 });
-                if (body.birds.some(b => b === null)) { showInfo('Every bird needs a name (or "Not a bird").'); return; }
-                const named = body.birds.filter(b => b.source !== 'ignored');
-                if (!named.length) { showInfo('All marked "not a bird" - use Delete if there is nothing here.'); return; }
-                // Photo-level name (family page, older views): the first named bird
-                body.species_confirmed = named[0].species_confirmed;
-                body.species_confirmed_source = named[0].source;
+                if (body.birds.some(b => b === null)) { showInfo('Every bird needs a name (or Exclude it).'); return; }
+                // Photo-level name (family page, older views): the first bird
+                body.species_confirmed = body.birds[0].species_confirmed;
+                body.species_confirmed_source = body.birds[0].source;
             } else {
                 const name = draft.photo.name.trim();
                 if (!name) { document.getElementById('name-photo').focus(); return; }
@@ -379,7 +422,7 @@ PAGE = r"""
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
             });
             if (!res.ok) { showInfo('Something went wrong - try again.'); return; }
-            showInfo(`Posted to Gallery: ${body.birds ? body.birds.filter(b => b.source !== 'ignored').map(b => b.species_confirmed).join(', ') : body.species_confirmed}`);
+            showInfo(`Posted to Gallery: ${body.birds ? body.birds.map(b => b.species_confirmed).join(', ') : body.species_confirmed}`);
             removeItem(r.id);
         }
 
@@ -421,7 +464,7 @@ PAGE = r"""
             if (e.key === 'ArrowLeft') navLightbox(-1);
             else if (e.key === 'ArrowRight') navLightbox(1);
             else if (e.key === 'Escape') closeLightbox();
-            else if (e.key === 'b' && lightboxIndex >= 0) toggleBoxes(document.getElementById('lbImg'), view[lightboxIndex].detections);
+            else if (e.key === 'b' && lightboxIndex >= 0) toggleBoxes(document.getElementById('lbImg'), view[lightboxIndex], boxOpts);
         });
 
         applyView();

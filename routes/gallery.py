@@ -103,7 +103,7 @@ async def gallery_page():
             <div class="lightbox-info">
                 <div id="lightboxCommon" style="font-size:20px; font-weight:600;"></div>
                 <div id="lightboxMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
-                <div class="bx-toggle" onclick="toggleBoxes(document.getElementById('lightboxImg'), flatList[lightboxIndex].detections)">show / hide boxes (b)</div>
+                <div class="bx-toggle" onclick="toggleBoxes(document.getElementById('lightboxImg'), flatList[lightboxIndex], boxOpts)">show / hide boxes (b) &middot; click a box to exclude it</div>
                 <button class="resend-classifier" onclick="resendToClassifier()">Resend to Classifier</button>
             </div>
         </div>
@@ -254,6 +254,14 @@ async def gallery_page():
                 });
             }
 
+            // Gallery shows AIY's SPECIES % on each box; a click excludes the
+            // box (or includes it again) and updates the label right away.
+            const boxOpts = { pct: 'aiy', onClick: async d => {
+                const s = flatList[lightboxIndex];
+                if (!s || !(await setExcluded(s, d, !d.excluded))) return;
+                renderLightbox();
+            } };
+
             function openLightbox(idx) {
                 lightboxIndex = idx;
                 renderLightbox();
@@ -270,7 +278,7 @@ async def gallery_page():
                 const s = flatList[lightboxIndex];
                 const img = document.getElementById('lightboxImg');
                 img.src = `/images/${s.filename}`;
-                drawBoxes(img, s.detections);
+                drawBoxes(img, s, boxOpts);
                 document.getElementById('lightboxCommon').textContent = photoLabel(s);
                 const conf = s.confidence_aiy != null ? `AIY ${(s.confidence_aiy * 100).toFixed(0)}% - ` : '';
                 document.getElementById('lightboxMeta').textContent =
@@ -306,7 +314,7 @@ async def gallery_page():
                 if (e.key === 'ArrowLeft') navLightbox(-1);
                 else if (e.key === 'ArrowRight') navLightbox(1);
                 else if (e.key === 'Escape') closeLightbox();
-                else if (e.key === 'b' && lightboxIndex >= 0) toggleBoxes(document.getElementById('lightboxImg'), flatList[lightboxIndex].detections);
+                else if (e.key === 'b' && lightboxIndex >= 0) toggleBoxes(document.getElementById('lightboxImg'), flatList[lightboxIndex], boxOpts);
             });
             ['birds', 'confMin', 'confMax'].forEach(id => document.getElementById(id).addEventListener('change', applyFilters));
 

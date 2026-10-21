@@ -149,7 +149,7 @@ PAGE = r"""
         <div style="color:white; margin-top:15px; text-align:center;">
             <div id="previewBirds" style="font-size:15px; font-weight:600;"></div>
             <div id="previewMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
-            <div class="bx-toggle" onclick="toggleBoxes(document.getElementById('previewImg'), allSightings[previewIndex].detections)">show / hide boxes (b)</div>
+            <div class="bx-toggle" onclick="toggleBoxes(document.getElementById('previewImg'), allSightings[previewIndex], boxOpts)">show / hide boxes (b) &middot; click a box to exclude it (e.g. a swinging watering can) or include it again</div>
         </div>
         <div class="controls" style="margin-top:14px;">
             <button class="btn-success" onclick="previewAction('approve')">Send to Species Queue (a)</button>
@@ -273,13 +273,23 @@ PAGE = r"""
             const s = allSightings[previewIndex];
             const img = $('previewImg');
             img.src = `/images/${s.filename}`;
-            drawBoxes(img, s.detections);
+            drawBoxes(img, s, boxOpts);
             const n = countedBirds(s).length;
             $('previewBirds').innerHTML = s.detect_status === 'pending' ? 'Not scanned yet'
                 : (n ? `${n} bird${n > 1 ? 's' : ''} found` : 'No bird found')
                   + ((s.person_count || 0) > 0 ? ' &middot; person' : '');
             $('previewMeta').textContent = `${s.timestamp.replace('T', ' ').slice(0, 16)}  (${previewIndex + 1} of ${allSightings.length} on this page)`;
         }
+        // Manage shows the DETECTOR's % (is it a bird at all?); a click on a
+        // box excludes it / includes it again, saved immediately.
+        const boxOpts = { pct: 'det', onClick: async d => {
+            const s = allSightings[previewIndex];
+            if (!s) return;
+            if (!(await setExcluded(s, d, !d.excluded))) { showInfo('Could not save that - try again.'); return; }
+            renderTable();
+            renderPreview();
+        } };
+
         function navPreview(delta) {
             if (allSightings.length === 0) return;
             previewIndex = (previewIndex + delta + allSightings.length) % allSightings.length;
@@ -311,7 +321,7 @@ PAGE = r"""
             else if (e.key === 'Escape') { closePreview(); loadSightings(); }
             else if (e.key === 'a') previewAction('approve');
             else if (e.key === 'r') previewAction('reject');
-            else if (e.key === 'b' && previewIndex >= 0) toggleBoxes($('previewImg'), allSightings[previewIndex].detections);
+            else if (e.key === 'b' && previewIndex >= 0) toggleBoxes($('previewImg'), allSightings[previewIndex], boxOpts);
         });
 
         function clearFilters() {

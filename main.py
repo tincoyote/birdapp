@@ -524,7 +524,12 @@ def _attach_detections(cursor, items):
     thr = DETECTOR_CONFIG["count_threshold"]
     for r in cursor.fetchall():
         d = dict(r)
-        d["counted"] = d["category"] == "animal" and d["det_conf"] >= thr
+        # listed: strong enough to get a number and a row (any category)
+        # excluded: a human said "not a bird / not a person" for this box
+        # counted: a bird/animal that counts and gets named
+        d["listed"] = d["det_conf"] >= thr
+        d["excluded"] = d["species_confirmed"] == detector.IGNORE
+        d["counted"] = d["category"] == "animal" and d["listed"] and not d["excluded"]
         by_id[d["sighting_id"]]["detections"].append(d)
 
 

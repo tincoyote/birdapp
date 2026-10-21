@@ -61,6 +61,17 @@ capacity, the next one reads this, checks the status list, and continues.
   Chromium); per-bird naming, quick buttons, "not a bird", bulk reject with
   stale-count guard all checked.
 
+## Round 2 (2026-10-20 evening, after first NAS run: 16 s/photo, ~105 min backfill)
+- Box % : Manage = detector confidence; Species Queue / Gallery / Trash = AIY
+  species confidence (people/vehicles always show detector %).
+- Exclude any box (bird, person, vehicle): click it or its Exclude button,
+  saved immediately (detections.species_confirmed='__ignore__'), counts and
+  best-detection recomputed (detector.recompute_summary). Re-scan resets it.
+  Motivation: a swinging watering can detected as a person.
+- Species Queue: "Species confidence" slider = the LEAST sure bird in the
+  photo; sort by the same value.
+- Trash: click a thumbnail to view (boxes, arrows, r = restore).
+
 ## Known follow-ups (not done)
 - Species dropdown can list one species twice: once as a bare Latin value
   (unconfirmed AIY guess) and once as a confirmed "Common (Latin)" string.
