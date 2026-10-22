@@ -14,6 +14,12 @@ router = APIRouter()
 # detector's confidence in the most likely animal in the photo; a photo with
 # no detection at all counts as 0%. The "all N matching" buttons act on
 # every photo the filter matches, across pages, via /api/sightings/bulk-action.
+#
+# 2026-10-22: counts stay live while reviewing in the preview. Rejecting or
+# queueing a photo there now redraws "N matching" and the "all N" buttons
+# right away (renderCounts); finishing the last photo on a page, or closing
+# the preview by either Escape or the x, reloads the list so the next page's
+# photos move up without a browser refresh.
 PAGE = r"""
 <!DOCTYPE html>
 <html>
@@ -142,7 +148,7 @@ PAGE = r"""
     </div>
 
     <div class="lightbox" id="previewModal">
-        <span onclick="closePreview()" style="position:absolute; top:20px; right:30px; color:white; font-size:28px; cursor:pointer; user-select:none;">&times;</span>
+        <span onclick="exitPreview()" style="position:absolute; top:20px; right:30px; color:white; font-size:28px; cursor:pointer; user-select:none;">&times;</span>
         <button class="lb-nav" style="left:20px;" onclick="navPreview(-1)">&#8592;</button>
         <button class="lb-nav" style="right:20px;" onclick="navPreview(1)">&#8594;</button>
         <div class="bx-wrap"><img id="previewImg"></div>
@@ -222,15 +228,25 @@ PAGE = r"""
             const data = await res.json();
             allSightings = data.items;
             total = data.total;
+            // Handled photos leave the filter, so the last page can vanish:
+            // step back to the new last page instead of showing an empty one.
+            const lastPage = Math.max(1, Math.ceil(total / perPage));
+            if (currentPage > lastPage) { currentPage = lastPage; return loadSightings(); }
             renderTable();
-            const pages = Math.max(1, Math.ceil(total / perPage));
+            renderCounts();
+            updateSelectedCount();
+        }
+
+        // Everything that shows `total`. Called after a full load and after
+        // each single-photo action in the preview, so the numbers never lag.
+        function renderCounts() {
+            const pages = Math.max(1, Math.ceil(total / +$('perPage').value));
             $('pageInfo').textContent = total ? `Page ${currentPage} of ${pages} (${total} matching)` : 'No results';
             $('btnPrev').disabled = currentPage <= 1;
             $('btnNext').disabled = currentPage >= pages;
             $('btnAllQueue').disabled = $('btnAllReject').disabled = total === 0;
             $('btnAllQueue').textContent = `Send all ${total} matching to Species Queue`;
             $('btnAllReject').textContent = `Reject all ${total} matching`;
-            updateSelectedCount();
         }
 
         function renderTable() {
@@ -268,6 +284,10 @@ PAGE = r"""
         // ---------- lightbox ----------
         function openPreview(idx) { previewIndex = idx; renderPreview(); $('previewModal').classList.add('active'); }
         function closePreview() { $('previewModal').classList.remove('active'); previewIndex = -1; }
+        // Leaving the preview (Escape, the x, or running out of photos on this
+        // page) reloads, so photos handled in the preview drop off the table
+        // and the next page's photos move up.
+        function exitPreview() { closePreview(); loadSightings(); }
         function renderPreview() {
             if (previewIndex < 0 || previewIndex >= allSightings.length) { closePreview(); return; }
             const s = allSightings[previewIndex];
@@ -310,6 +330,8 @@ PAGE = r"""
             allSightings.splice(previewIndex, 1);
             total -= 1;
             renderTable();
+            renderCounts();
+            if (allSightings.length === 0) { exitPreview(); return; }
             if (previewIndex >= allSightings.length) previewIndex = allSightings.length - 1;
             renderPreview();
         }
@@ -318,7 +340,7 @@ PAGE = r"""
             if (!$('previewModal').classList.contains('active')) return;
             if (e.key === 'ArrowLeft') navPreview(-1);
             else if (e.key === 'ArrowRight') navPreview(1);
-            else if (e.key === 'Escape') { closePreview(); loadSightings(); }
+            else if (e.key === 'Escape') exitPreview();
             else if (e.key === 'a') previewAction('approve');
             else if (e.key === 'r') previewAction('reject');
             else if (e.key === 'b' && previewIndex >= 0) toggleBoxes($('previewImg'), allSightings[previewIndex], boxOpts);
