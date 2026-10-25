@@ -157,6 +157,49 @@ def init_db():
     conn.close()
 
 
+# --- The one way into Species Queue (2026-10-25) ---
+# Species Queue shows every photo with review_status='pending_review'. Every
+# path that sends a photo there - capture, Resend, Trash restore, Manage's
+# "back to Species Queue" - goes through this, so a photo can't end up in
+# limbo (e.g. pending_review but not queued, which Manage used to own).
+# species_id_status: 'queued' while the detector is still scanning it,
+# 'classified' once there are per-bird names (or the scan failed, so it can
+# at least be named by hand).
+QUEUE_FOR_REVIEW_SET = """review_status = 'pending_review', review_updated_at = ?,
+    needs_species_id = 1,
+    species_id_status = CASE WHEN detect_status IN ('done', 'failed') THEN 'classified' ELSE 'queued' END"""
+
+
+def queue_for_review(cursor, where, params):
+    """Send every sighting matching `where` to Species Queue. Returns rows changed."""
+    cursor.execute(f"UPDATE sightings SET {QUEUE_FOR_REVIEW_SET} WHERE {where}",
+                   [datetime.now().isoformat()] + list(params))
+    return cursor.rowcount
+
+
+def reconcile_review_queue(db_path):
+    """Run at startup. Moves photos stranded by the old flow into Species Queue:
+      - Manage's backlog (pending_review, never queued), and photos restored
+        from Trash after being posted (pending_review + confirmed)
+      - Gallery photos once sent back for renaming but never re-posted
+        (approved + queued/classified) - they were sent back to be fixed,
+        so they leave the Gallery until they are.
+    Idempotent: on a healthy database it changes nothing."""
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        cur = conn.cursor()
+        a = queue_for_review(cur, "review_status = 'pending_review' "
+                                  "AND species_id_status NOT IN ('queued', 'classified')", [])
+        b = queue_for_review(cur, "review_status = 'approved' "
+                                  "AND species_id_status IN ('queued', 'classified')", [])
+        conn.commit()
+        if a or b:
+            logger.info("Species Queue: moved in %s photo(s) from the old Manage stage, "
+                        "%s sent back from Gallery", a, b)
+    finally:
+        conn.close()
+
+
 init_db()
 migrate_v1_to_v2(DB_PATH)
 migrate_v2_to_v3(DB_PATH)
@@ -164,6 +207,7 @@ migrate_v3_to_v4(DB_PATH)
 migrate_v4_to_v5(DB_PATH)
 migrate_v5_to_v6(DB_PATH)
 migrate_v6_to_v7(DB_PATH)
+reconcile_review_queue(DB_PATH)
 
 # --- AIY (Google) bird classifier: loads once at startup, fails soft if files
 # are missing. Lives in aiy.py since 2026-10-20 so the MegaDetector worker
@@ -274,35 +318,22 @@ def classify_and_save(image_path, sighting_id):
 
     agreement = compute_agreement(species_aiy, confidence_aiy, species_inat, confidence_inat)
 
-    # --- Gating logic (2026-09-07, reverted 2026-09-20) ---
-    # AIY runs on every photo, same as always - unchanged and cheap. What
-    # changed between those two dates is what happens to the RESULT.
+    # --- Where a new photo goes ---
+    # 2026-10-25: straight to Species Queue. The Manage bird/no-bird gate
+    # (2026-09-20 to 2026-10-25) is gone: the detector + per-bird AIY run on
+    # every photo in ~9-16 s, so Species Queue's own filters (bird
+    # confidence, species confidence, bird count) do the screening Manage
+    # used to. See queue_for_review() below for the one rule every path
+    # into Species Queue now shares.
     #
-    # Auto-trash is OFF by default (see the constants above - measured
-    # against real data, AIY's confidence doesn't actually separate birds
-    # from junk here, and turning it on would have discarded half the
-    # human-approved photos). Both switches are left in place, wired and
-    # ready, so re-enabling is a one-line change if a better signal shows up.
+    # Auto-trash is still OFF by default (see the constants above - AIY's
+    # full-frame confidence doesn't separate birds from junk here). Both
+    # switches stay wired so re-enabling is a one-line change.
     #
-    # From 2026-09-07 to 2026-09-20, anything AIY didn't call junk was ALSO
-    # auto-flagged needs_species_id=1 / species_id_status='queued' at
-    # capture time, before a human ever saw it - meant as a harmless queue-
-    # priming optimization for whenever a second classifier showed up.
-    # It stopped being harmless once Manage started filtering its own list
-    # to species_id_status='not_queued' (2026-09-20, so Manage only shows
-    # genuinely fresh arrivals, not things already queued elsewhere): every
-    # new photo was already 'queued' before Manage ever loaded, so Manage's
-    # list was permanently empty and everything skipped straight to Species
-    # Queue - discovered when a full day's photos did exactly that. Queue
-    # state is now set ONLY by explicit human action (Manage's "Send to
-    # Species Queue", or /resend-classifier's reset) - never automatically
-    # at capture time - which is what actually makes Manage a real gate
-    # instead of a pass-through.
     # species_aiy being None means AIY FAILED (model missing/corrupt, bad
-    # image), not that it judged the photo junk. It used to count as junk,
-    # which on 2026-09-24/25 silently auto-rejected ~440 photos into the
-    # trash when a bad model download broke AIY. A failure now lands in
-    # Manage like any other photo, with a note, so it's visible, not lost.
+    # image), not that it judged the photo junk. On 2026-09-24/25 treating
+    # failure as junk silently auto-rejected ~440 photos; a failure now
+    # lands in Species Queue with a note instead.
     is_background_or_junk = (
         (AUTO_TRASH_ON_BACKGROUND_LABEL and species_aiy == "background")
         or (
@@ -311,16 +342,9 @@ def classify_and_save(image_path, sighting_id):
             and confidence_aiy < AUTO_TRASH_CONFIDENCE_THRESHOLD
         )
     )
-
     if is_background_or_junk:
-        review_status = "rejected"
-        needs_species_id = 0
-        species_id_status = "not_queued"
         auto_note = "auto-rejected: background or confidence below threshold"
     else:
-        review_status = "pending_review"
-        needs_species_id = 0
-        species_id_status = "not_queued"
         auto_note = "AIY classification failed at capture" if species_aiy is None else None
 
     # The CASEs: the detector worker may (rarely) finish first and have
@@ -333,14 +357,18 @@ def classify_and_save(image_path, sighting_id):
                confidence_aiy = CASE WHEN detect_status = 'done' THEN confidence_aiy ELSE ? END,
                species_inat = ?, confidence_inat = ?, classifier_agreement = ?,
                common_name = CASE WHEN detect_status = 'done' THEN common_name ELSE ? END,
-               review_status = ?, review_updated_at = ?,
-               needs_species_id = ?, species_id_status = ?,
                notes = COALESCE(notes, ?)
            WHERE id = ?""",
         (species_aiy, confidence_aiy, species_inat, confidence_inat, agreement,
-         common_name, review_status, datetime.now().isoformat(),
-         needs_species_id, species_id_status, auto_note, sighting_id)
+         common_name, auto_note, sighting_id)
     )
+    if is_background_or_junk:
+        cursor.execute("UPDATE sightings SET review_status = 'rejected', review_updated_at = ?, "
+                       "needs_species_id = 0, species_id_status = 'not_queued' WHERE id = ?",
+                       (datetime.now().isoformat(), sighting_id))
+    else:
+        # Guard: never pull back a photo a human already posted.
+        queue_for_review(cursor, "id = ? AND species_id_status != 'confirmed'", [sighting_id])
     conn.commit()
     conn.close()
 
@@ -459,6 +487,19 @@ _SPECIES_MATCH = """(
 )"""
 
 
+def _species_conf_sql():
+    """SQL for a photo's species confidence = AIY's confidence in its LEAST
+    sure counted bird (same rule as Species Queue's slider, so a confident
+    finch can't hide an unsure jay). No bird box: the photo-level AIY guess.
+    The threshold is a float from camera_config.json, inlined so the
+    expression also works in ORDER BY."""
+    thr = float(DETECTOR_CONFIG["count_threshold"])
+    return ("COALESCE((SELECT MIN(d.confidence_aiy) FROM detections d "
+            "WHERE d.sighting_id = sightings.id AND d.category = 'animal' "
+            f"AND d.det_conf >= {thr!r} AND COALESCE(d.species_confirmed, '') != '__ignore__' "
+            "AND d.confidence_aiy IS NOT NULL), confidence_aiy)")
+
+
 def _sightings_where(q: dict):
     """WHERE clause for /api/sightings and /api/sightings/bulk-action, so a
     bulk action hits exactly the photos the filter shows - across all pages,
@@ -471,6 +512,7 @@ def _sightings_where(q: dict):
       animal_min / animal_max     - number of counted birds/animals.
       detect_status               - pending / done / failed.
       has_person                  - true: only photos with a person in them.
+      sp_conf_min / sp_conf_max   - species confidence (least sure bird), 0-1.
     """
     if q.get("review_status"):
         parts, params = ["review_status = ?"], [q["review_status"]]
@@ -506,6 +548,10 @@ def _sightings_where(q: dict):
         params.append(int(q["animal_max"]))
     if q.get("has_person") in (True, "true", "1", 1):
         parts.append("COALESCE(person_count, 0) > 0")
+    smin, smax = q.get("sp_conf_min"), q.get("sp_conf_max")
+    if (smin is not None and float(smin) > 0) or (smax is not None and float(smax) < 1):
+        parts.append(f"COALESCE({_species_conf_sql()}, 0) BETWEEN ? AND ?")
+        params += [float(smin or 0), float(1 if smax is None else smax)]
     return " AND ".join(parts), params
 
 
@@ -522,8 +568,11 @@ def _attach_detections(cursor, items):
                        FROM detections WHERE sighting_id IN ({marks}) ORDER BY sighting_id, idx""",
                    list(by_id))
     thr = DETECTOR_CONFIG["count_threshold"]
+    skip = set(DETECTOR_CONFIG.get("skip_categories") or [])
     for r in cursor.fetchall():
         d = dict(r)
+        if d["category"] in skip:
+            continue  # e.g. vehicles stored before 2026-10-25 - never shown
         # listed: strong enough to get a number and a row (any category)
         # excluded: a human said "not a bird / not a person" for this box
         # counted: a bird/animal that counts and gets named
@@ -550,6 +599,8 @@ async def list_sightings(
     animal_max: int = Query(None, ge=0),
     detect_status: str = Query(None),
     has_person: bool = Query(False),
+    sp_conf_min: float = Query(None, ge=0, le=1),
+    sp_conf_max: float = Query(None, ge=0, le=1),
     sort_by: str = Query("timestamp"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=500),
@@ -563,7 +614,7 @@ async def list_sightings(
              species_id_status=species_id_status, review_status=review_status,
              is_trashed=is_trashed, det_conf_min=det_conf_min, det_conf_max=det_conf_max,
              animal_min=animal_min, animal_max=animal_max, detect_status=detect_status,
-             has_person=has_person)
+             has_person=has_person, sp_conf_min=sp_conf_min, sp_conf_max=sp_conf_max)
     where_clause, params = _sightings_where(q)
 
     conn = sqlite3.connect(DB_PATH)
@@ -578,6 +629,8 @@ async def list_sightings(
         "det_conf": "COALESCE(max_det_conf, -1) DESC, timestamp DESC",
         "det_conf_asc": "COALESCE(max_det_conf, 2) ASC, timestamp DESC",
         "oldest": "timestamp ASC",
+        "sp_conf": f"COALESCE({_species_conf_sql()}, -1) DESC, timestamp DESC",
+        "sp_conf_asc": f"COALESCE({_species_conf_sql()}, 2) ASC, timestamp DESC",
     }.get(sort_by, "timestamp DESC")
 
     offset = (page - 1) * limit
@@ -621,11 +674,10 @@ async def bulk_action(payload: dict, username: str = Depends(verify_admin_auth))
             cursor.execute(f"UPDATE sightings SET review_status = 'rejected', review_updated_at = ? "
                            f"WHERE {where_clause}", [now] + params)
         elif action == "queue":
-            # Same rule as the single-photo queue endpoint: if detection is
-            # already done there's nothing to wait for - straight to ready.
-            cursor.execute(f"""UPDATE sightings SET needs_species_id = 1,
-                    species_id_status = CASE WHEN detect_status = 'done' THEN 'classified' ELSE 'queued' END
-                    WHERE {where_clause} AND species_id_status != 'confirmed'""", params)
+            # Back to Species Queue - since 2026-10-25 this is Manage's "send
+            # these Gallery photos back to be renamed", so confirmed photos
+            # are included on purpose.
+            queue_for_review(cursor, where_clause, params)
         else:
             cursor.execute(f"UPDATE sightings SET detect_status = 'pending' WHERE {where_clause}", params)
         done = cursor.rowcount

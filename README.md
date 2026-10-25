@@ -23,30 +23,37 @@ the same way. See `/webhook` in `main.py` - it only ever reads a multipart
    saved and gets a quick full-frame AIY guess.
 2. A background worker in the container (`detector.py`) runs
    [MegaDetector](https://github.com/agentmorris/MegaDetector) v5a on it,
-   which finds every animal, person and vehicle and its box.
+   which finds every animal, person and vehicle and its box (vehicles are
+   dropped - parked cars on the street aren't interesting).
 3. Each animal is cropped out and classified by AIY on its own, so a photo
    with a House Finch pair and a Scrub-Jay gets three names. AIY is far more
    accurate on a crop: on the full frame a bird is only ~17-46 px of AIY's
    224 px input.
-4. **Manage**: a human screens bird / no bird, using the detector's result
-   to filter ("no bird found", "2+ birds", ...) and to reject or keep every
-   match in one click.
-5. **Species Queue**: each bird has a row pre-filled with AIY's guess -
-   accept, type a correction, mark "not a bird", or one-click Squirrel/Cat
-   (AIY only knows birds). Posting approves the photo to the Gallery.
-6. Approved sightings appear on `/gallery` (admin) and `/family` (public,
+4. **Species Queue**: every new photo lands here on its own. Filter by bird
+   confidence (the detector's "is it a bird"), species confidence (AIY on
+   the least sure bird) and bird count; each bird has a row pre-filled with
+   AIY's guess - accept, type a correction, mark "not a bird", or one-click
+   Squirrel/Cat (AIY only knows birds). Posting approves the photo to the
+   Gallery.
+5. Approved sightings appear on `/gallery` (admin) and `/family` (public,
    privacy-cropped, no admin functionality exposed). A photo counts under
    every species in it.
+6. **Manage**: cleanup over the Gallery - filter posted photos by species,
+   species confidence, bird count or person, then reject them or send them
+   back to Species Queue to rename, one at a time or every match at once.
 
 ## Review workflow
 
-`Manage` (bird / no bird) → `Species Queue` (name each bird) → `Gallery` (approved) → `/family` (public).
+camera → `Species Queue` (name each bird) → `Gallery` (approved) → `/family` (public).
+`Manage` sends Gallery photos back to `Species Queue` (or to `Trash`). Until
+2026-10-25 Manage was a bird / no-bird screen in front of Species Queue.
 
 `review_status` (pending_review/approved/rejected) and `species_id_status`
 (not_queued/queued/classified/confirmed) are deliberately independent
 columns - approving and naming are separate questions. A third,
 `detect_status` (pending/done/failed), tracks the detector; `queued` now
-just means "sent to Species Queue, detector not finished yet".
+just means "in Species Queue, detector not finished yet". Every path into
+Species Queue goes through `main.queue_for_review()`.
 
 ## Architecture
 

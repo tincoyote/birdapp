@@ -72,9 +72,9 @@ async def stats_page():
     one = lambda sql: c.execute(sql).fetchone()[0]
 
     pipeline = [
-        ("/manage", one("SELECT COUNT(*) FROM sightings WHERE review_status='pending_review' AND species_id_status='not_queued'"), "In Manage"),
-        ("/species-queue", one("SELECT COUNT(*) FROM sightings WHERE species_id_status='queued' AND review_status!='rejected'"), "Being scanned for birds"),
-        ("/species-queue", one("SELECT COUNT(*) FROM sightings WHERE species_id_status='classified' AND review_status!='rejected'"), "Ready in Species Queue"),
+        # 2026-10-25: no Manage stage - new photos go straight to Species Queue.
+        ("/species-queue", one("SELECT COUNT(*) FROM sightings WHERE species_id_status='queued' AND review_status='pending_review'"), "Being scanned for birds"),
+        ("/species-queue", one("SELECT COUNT(*) FROM sightings WHERE species_id_status='classified' AND review_status='pending_review'"), "Ready in Species Queue"),
         ("/gallery", one("SELECT COUNT(*) FROM sightings WHERE review_status='approved'"), "In Gallery"),
         ("/trash", one("SELECT COUNT(*) FROM sightings WHERE review_status='rejected'"), "In Trash"),
     ]

@@ -16,6 +16,10 @@ QUICK_NAMES = [
     ("Gray Squirrel", "Western Gray Squirrel (Sciurus griseus)"),
     ("Cat", "Domestic Cat (Felis catus)"),
 ]
+# The whole queue ships to the browser at once (filters are client-side).
+# Raised from 1000 on 2026-10-25, when Manage's backlog moved in here.
+QUEUE_LIMIT = 3000
+
 EXTRA_NAMES = ["Tree Squirrel (sciurus species)", "California Ground Squirrel (Otospermophilus beecheyi)",
                "Domestic Cat (Felis catus)", "Person"]
 
@@ -103,6 +107,11 @@ PAGE = r"""
                     <input type="range" id="fConfMin" min="0" max="100" value="0" oninput="applyView()" style="width:100%">
                     <input type="range" id="fConfMax" min="0" max="100" value="100" oninput="applyView()" style="width:100%">
                 </div></div>
+            <div class="fg" style="min-width:220px"><label>Bird confidence: <span id="detLabel">0% - 100%</span> <span style="color:#999">(is it a bird)</span></label>
+                <div style="display:flex; gap:6px">
+                    <input type="range" id="fDetMin" min="0" max="100" value="0" oninput="applyView()" style="width:100%">
+                    <input type="range" id="fDetMax" min="0" max="100" value="100" oninput="applyView()" style="width:100%">
+                </div></div>
             <div class="fg"><label>Search name</label><input type="text" id="fSearch" placeholder="finch, Haemorhous..." oninput="applyView()"></div>
             <div class="fg"><label>Sort</label>
                 <select id="fSort" onchange="applyView()">
@@ -110,6 +119,8 @@ PAGE = r"""
                     <option value="oldest">Oldest first</option>
                     <option value="aiyconf">Species confidence, high first</option>
                     <option value="aiyconf_low">Species confidence, low first</option>
+                    <option value="detconf">Bird confidence, high first</option>
+                    <option value="detconf_low">Bird confidence, low first</option>
                     <option value="name">Name A-Z</option>
                 </select></div>
             <button class="btn-secondary" onclick="clearFilters()">Clear filters</button>
@@ -120,7 +131,7 @@ PAGE = r"""
             <button class="btn-secondary" onclick="clearSel()">Clear selection</button>
             <span id="selCount" style="color:#666; font-size:13px; margin-right:auto;"></span>
             <button class="btn-success" id="bAiy" onclick="batch('aiy')" disabled>Post selected with AIY's names</button>
-            <button class="btn-secondary" id="bResend" onclick="batch('resend')" disabled>Resend selected</button>
+            <button class="btn-secondary" id="bResend" onclick="batch('resend')" disabled>Re-scan selected</button>
             <button class="btn-danger" id="bDel" onclick="batch('del')" disabled>Delete selected</button>
         </div>
 
@@ -140,6 +151,7 @@ PAGE = r"""
     <script>
         __BOXES_JS__
         const queueData = __QUEUE_DATA__;
+        const queueTotal = __QUEUE_TOTAL__;
         const quickNames = __QUICK_NAMES__;
         let view = [];
         let lightboxIndex = -1;
@@ -164,12 +176,17 @@ PAGE = r"""
             const c = birdsOf(r).map(d => d.confidence_aiy).filter(v => v != null);
             return c.length ? Math.min(...c) : r.confidence_aiy;
         }
-        function syncConf() {
-            let a = +val('fConfMin'), b = +val('fConfMax');
+        function syncPair(minId, maxId, labelId) {
+            let a = +val(minId), b = +val(maxId);
             if (a > b) [a, b] = [b, a];
-            document.getElementById('confLabel').textContent = `${a}% - ${b}%`;
+            document.getElementById(labelId).textContent = `${a}% - ${b}%`;
             return [a, b];
         }
+        const syncConf = () => syncPair('fConfMin', 'fConfMax', 'confLabel');
+        // Bird confidence (2026-10-25) = the detector's confidence in the
+        // photo's most likely animal - the "is there a bird" number Manage
+        // used to filter on. Photos still being scanned have none yet.
+        function birdConf(r) { return r.detect_status === 'done' ? (r.max_det_conf || 0) : null; }
 
         // ---------- filtering / sorting ----------
         function applyView() {
@@ -177,10 +194,16 @@ PAGE = r"""
             const q = val('fSearch').trim().toLowerCase();
             const [cMin, cMax] = syncConf();
             const confOn = cMin > 0 || cMax < 100;
+            const [dMin, dMax] = syncPair('fDetMin', 'fDetMax', 'detLabel');
+            const detOn = dMin > 0 || dMax < 100;
             view = queueData.filter(r => {
                 if (confOn) {
                     const c = speciesConf(r);
                     if (c == null || c * 100 < cMin || c * 100 > cMax) return false;
+                }
+                if (detOn) {
+                    const c = birdConf(r);
+                    if (c == null || c * 100 < dMin || c * 100 > dMax) return false;
                 }
                 if (from && r.date < from) return false;
                 if (to && r.date > to) return false;
@@ -201,6 +224,8 @@ PAGE = r"""
                 oldest: (a, b) => a.timestamp.localeCompare(b.timestamp),
                 aiyconf: (a, b) => (speciesConf(b) ?? -1) - (speciesConf(a) ?? -1),
                 aiyconf_low: (a, b) => (speciesConf(a) ?? 2) - (speciesConf(b) ?? 2),
+                detconf: (a, b) => (birdConf(b) ?? -1) - (birdConf(a) ?? -1),
+                detconf_low: (a, b) => (birdConf(a) ?? 2) - (birdConf(b) ?? 2),
                 name: (a, b) => photoLabel(a).localeCompare(photoLabel(b)),
             }[val('fSort')];
             view.sort(cmp);
@@ -211,8 +236,8 @@ PAGE = r"""
 
         function clearFilters() {
             ['fDateFrom', 'fDateTo', 'fStatus', 'fBirds', 'fSearch'].forEach(id => document.getElementById(id).value = '');
-            document.getElementById('fConfMin').value = 0;
-            document.getElementById('fConfMax').value = 100;
+            ['fConfMin', 'fDetMin'].forEach(id => document.getElementById(id).value = 0);
+            ['fConfMax', 'fDetMax'].forEach(id => document.getElementById(id).value = 100);
             document.getElementById('fSort').value = 'newest';
             applyView();
         }
@@ -221,6 +246,7 @@ PAGE = r"""
             const ready = queueData.filter(r => r.species_id_status === 'classified').length;
             document.getElementById('countLabel').textContent = queueData.length
                 ? `${ready} ready to name, ${queueData.length - ready} still being scanned for birds - showing ${view.length}`
+                  + (queueTotal > queueData.length ? ` (newest ${queueData.length} of ${queueTotal} loaded - clear some and reload for the rest)` : '')
                 : 'Nothing queued';
             const grid = document.getElementById('grid');
             if (!view.length) {
@@ -274,7 +300,7 @@ PAGE = r"""
                 ids = ready;
             }
             if (!ids.length) { showInfo('None of the selected photos have AIY names to post yet.'); return; }
-            const verb = { aiy: "Post with AIY's names", resend: 'Resend to classifier (back to Manage)', del: 'Delete' }[kind];
+            const verb = { aiy: "Post with AIY's names", resend: 'Re-scan for birds', del: 'Delete' }[kind];
             if (!confirm(`${verb}: ${ids.length} photo(s)?` + (skipped ? ` (${skipped} without named birds will be skipped)` : ''))) return;
             let done = 0;
             for (const id of ids) {
@@ -287,6 +313,8 @@ PAGE = r"""
                     });
                 } else if (kind === 'resend') {
                     res = await fetch(`/api/sightings/${id}/resend-classifier`, { method: 'POST' });
+                    if (res.ok) { markRescanning(id); done++; }
+                    continue;
                 } else {
                     res = await fetch(`/api/sightings/${id}/review-status`, {
                         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -442,10 +470,20 @@ PAGE = r"""
             showInfo('Sent to trash');
             removeItem(id);
         }
+        // Resend no longer leaves the queue (2026-10-25): the photo stays here,
+        // shown as "still scanning" until the detector finishes (~10-20 s;
+        // reload the page to see the new boxes).
+        function markRescanning(id) {
+            const r = byId(id);
+            if (r) { r.detect_status = 'pending'; r.species_id_status = 'queued'; }
+        }
         async function resendToClassifier(id) {
-            await fetch(`/api/sightings/${id}/resend-classifier`, { method: 'POST' });
-            showInfo('Resent - back in Manage, and it will be re-scanned for birds');
-            removeItem(id);
+            const res = await fetch(`/api/sightings/${id}/resend-classifier`, { method: 'POST' });
+            if (!res.ok) { showInfo('Could not resend - try again.'); return; }
+            markRescanning(id);
+            showInfo('Re-scanning for birds - reload in a minute to see the new boxes');
+            applyView();
+            if (lightboxIndex >= 0) renderLightbox();
         }
 
         function showInfo(msg) {
@@ -476,7 +514,8 @@ PAGE = r"""
 
 @router.get("/species-queue")
 async def species_queue_page():
-    """Name the birds in photos sent here from Manage. Since 2026-10-20 every
+    """Name the birds in every new photo (since 2026-10-25 photos arrive here
+    straight from the camera - there's no Manage screen first). Every
     bird MegaDetector found gets its own row, pre-filled with AIY's guess on
     that bird's crop; a photo reaches the Gallery once it's posted here via
     /confirm-species. Rows and their detections ship to the browser as one
@@ -492,10 +531,12 @@ async def species_queue_page():
         "SELECT id, filename, timestamp, species_aiy, confidence_aiy, common_name, "
         "species_id_status, detect_status, animal_count, person_count, max_det_conf "
         "FROM sightings WHERE species_id_status IN ('queued', 'classified') "
-        "AND review_status != 'rejected' "
-        "ORDER BY timestamp DESC LIMIT 1000"
+        "AND review_status = 'pending_review' "
+        "ORDER BY timestamp DESC LIMIT ?", (QUEUE_LIMIT,)
     )
     rows = [dict(r) for r in cursor.fetchall()]
+    total = cursor.execute("SELECT COUNT(*) FROM sightings WHERE species_id_status IN ('queued', 'classified') "
+                           "AND review_status = 'pending_review'").fetchone()[0]
     _attach_detections(cursor, rows)
     conn.close()
 
@@ -512,5 +553,6 @@ async def species_queue_page():
                 .replace("__NAV__", NAV_HTML)
                 .replace("__NAME_OPTIONS__", options)
                 .replace("__QUICK_NAMES__", json_module.dumps(QUICK_NAMES))
+                .replace("__QUEUE_TOTAL__", str(total))
                 .replace("__QUEUE_DATA__", json_module.dumps(rows).replace("<", "\\u003c")))
     return HTMLResponse(html)

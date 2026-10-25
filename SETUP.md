@@ -13,8 +13,8 @@ prior familiarity with this specific project.
    `ADMIN_USERNAME`/`ADMIN_PASSWORD`. Leave `API_USERNAME`/`API_PASSWORD`
    blank - they were only for the retired SpeciesNet script.
 3. Build and start it: `docker compose up -d --build`
-4. Birdapp is now reachable at `http://<your-server>:8000`. `/manage`,
-   `/gallery`, `/species-queue`, and `/trash` need the admin credentials
+4. Birdapp is now reachable at `http://<your-server>:8000`. `/species-queue`,
+   `/gallery`, `/manage`, and `/trash` need the admin credentials
    from step 2; `/family` and `/about` are public.
 5. Point your camera's motion-triggered upload feature at
    `http://<your-server>:8000/webhook`. Any camera or system that can POST
@@ -45,8 +45,10 @@ download is incomplete or wrong (checksum), rather than starting broken.
     counts as a bird.
   - `torch_threads` (default 2): CPU threads. More = faster scans, less
     headroom for everything else on the machine.
+  - `skip_categories` (default `["vehicle"]`): detector classes that are
+    never stored or boxed.
   - `enabled: false` turns the detector off entirely (photos then stay
-    "Not scanned yet" in Manage).
+    "still scanning" in Species Queue).
 
 The old laptop SpeciesNet script was retired on 2026-10-20 and lives in
 `_Archive/speciesnet-runner/` for reference only. `API_USERNAME` /

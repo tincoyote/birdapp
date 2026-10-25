@@ -8,23 +8,19 @@ router = APIRouter()
 # Plain template with __PLACEHOLDER__ substitution (same pattern as
 # species_queue.py) - no f-string brace escaping in the JS.
 #
-# 2026-10-20: Manage filters on MegaDetector's result instead of AIY's
-# full-frame confidence (which was measured not to separate bird/no-bird -
-# see AUTO_TRASH_CONFIDENCE_THRESHOLD in main.py). "Best detection" is the
-# detector's confidence in the most likely animal in the photo; a photo with
-# no detection at all counts as 0%. The "all N matching" buttons act on
-# every photo the filter matches, across pages, via /api/sightings/bulk-action.
-#
-# 2026-10-22: counts stay live while reviewing in the preview. Rejecting or
-# queueing a photo there now redraws "N matching" and the "all N" buttons
-# right away (renderCounts); finishing the last photo on a page, or closing
-# the preview by either Escape or the x, reloads the list so the next page's
-# photos move up without a browser refresh.
+# 2026-10-25: Manage is now a cleanup view over the GALLERY (posted photos),
+# not a bird/no-bird screen in front of Species Queue - new photos go
+# straight to Species Queue (see main.queue_for_review). Same tools as
+# before (quick filters, paging, bulk "all N matching", one-at-a-time
+# preview), but the slider is the SPECIES confidence (AIY on the least sure
+# bird) instead of the detector's "is it a bird", plus a species filter.
+# Actions: reject to Trash, or send back to Species Queue to rename.
+# Counts stay live while working in the preview (2026-10-22).
 PAGE = r"""
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Manage - Review Sightings</title>
+    <title>Manage Gallery</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; padding: 20px; }
@@ -71,9 +67,10 @@ PAGE = r"""
 </head>
 <body>
     <div class="container">
-        <h1>Manage - Review Sightings</h1>
+        <h1>Manage Gallery</h1>
         __NAV__
         <div class="info" id="info"></div>
+        <div class="hint" style="margin:-8px 0 14px; font-size:13px">Clean up posted photos: find likely mis-IDs by species confidence, then reject them or send them back to Species Queue to rename.</div>
 
         <div class="controls presets" id="presets">
             <span style="font-size:13px; color:#666;">Quick filter:</span>
@@ -82,26 +79,28 @@ PAGE = r"""
             <button data-p="bird" onclick="preset('bird')">Has bird(s)</button>
             <button data-p="multi" onclick="preset('multi')">2+ birds</button>
             <button data-p="person" onclick="preset('person')">Person in photo</button>
-            <button data-p="pending" onclick="preset('pending')">Not scanned yet</button>
         </div>
 
         <div class="filters">
             <div class="filter-group"><label>Date From</label><input type="date" id="dateFrom" onchange="applyFilters()"></div>
             <div class="filter-group"><label>Date To</label><input type="date" id="dateTo" onchange="applyFilters()"></div>
+            <div class="filter-group"><label>Species</label>
+                <select id="species" onchange="applyFilters()"><option value="">All species</option></select>
+            </div>
             <div class="filter-group">
-                <label>Best detection: <span id="detLabel">0% - 100%</span></label>
+                <label>Species confidence: <span id="spLabel">0% - 100%</span></label>
                 <div class="range-pair">
-                    <input type="range" id="detMin" min="0" max="100" value="0" oninput="syncDet()" onchange="applyFilters()">
-                    <input type="range" id="detMax" min="0" max="100" value="100" oninput="syncDet()" onchange="applyFilters()">
+                    <input type="range" id="spMin" min="0" max="100" value="0" oninput="syncSp()" onchange="applyFilters()">
+                    <input type="range" id="spMax" min="0" max="100" value="100" oninput="syncSp()" onchange="applyFilters()">
                 </div>
-                <div class="hint">Detector's confidence in its most likely animal. Below __THR__% isn't counted as a bird.</div>
+                <div class="hint">AIY's confidence in the photo's least sure bird. Low = likely mis-ID.</div>
             </div>
             <div class="filter-group"><label>Sort</label>
                 <select id="sortBy" onchange="applyFilters()">
                     <option value="timestamp">Newest first</option>
                     <option value="oldest">Oldest first</option>
-                    <option value="det_conf_asc">Best detection, low first</option>
-                    <option value="det_conf">Best detection, high first</option>
+                    <option value="sp_conf_asc">Species confidence, low first</option>
+                    <option value="sp_conf">Species confidence, high first</option>
                 </select>
             </div>
         </div>
@@ -112,10 +111,10 @@ PAGE = r"""
         </div>
 
         <div class="controls">
-            <button class="btn-success" onclick="acceptSelected()" id="btnAccept" disabled>Send selected to Species Queue</button>
+            <button class="btn-primary" onclick="requeueSelected()" id="btnAccept" disabled>Send selected back to Species Queue</button>
             <button class="btn-danger" onclick="deleteSelected()" id="btnDel" disabled>Reject selected to Trash</button>
             <span style="flex:1"></span>
-            <button class="btn-outline-success" onclick="bulk('queue')" id="btnAllQueue" disabled>Send all matching to Species Queue</button>
+            <button class="btn-outline-success" onclick="bulk('queue')" id="btnAllQueue" disabled>Send all matching back to Species Queue</button>
             <button class="btn-outline-danger" onclick="bulk('reject')" id="btnAllReject" disabled>Reject all matching</button>
         </div>
 
@@ -137,8 +136,8 @@ PAGE = r"""
                     <tr>
                         <th style="width:40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
                         <th style="width:110px;">Image</th>
-                        <th>Birds</th>
-                        <th style="width:130px;">Best detection</th>
+                        <th>Species</th>
+                        <th style="width:130px;">Species confidence</th>
                         <th style="width:150px;">Date</th>
                     </tr>
                 </thead>
@@ -158,7 +157,7 @@ PAGE = r"""
             <div class="bx-toggle" onclick="toggleBoxes(document.getElementById('previewImg'), allSightings[previewIndex], boxOpts)">show / hide boxes (b) &middot; click a box to exclude it (e.g. a swinging watering can) or include it again</div>
         </div>
         <div class="controls" style="margin-top:14px;">
-            <button class="btn-success" onclick="previewAction('approve')">Send to Species Queue (a)</button>
+            <button class="btn-primary" onclick="previewAction('approve')">Back to Species Queue (a)</button>
             <button class="btn-danger" onclick="previewAction('reject')">Reject to Trash (r)</button>
         </div>
     </div>
@@ -172,13 +171,30 @@ PAGE = r"""
         __BOXES_JS__
         let currentPage = 1, total = 0, allSightings = [], selectedIds = new Set(), previewIndex = -1;
         let activePreset = 'all';
-        const THR = __THR__ / 100;
         const $ = id => document.getElementById(id);
 
-        function syncDet() {
-            let a = +$('detMin').value, b = +$('detMax').value;
+        function spRange() {
+            let a = +$('spMin').value, b = +$('spMax').value;
             if (a > b) { [a, b] = [b, a]; }
-            $('detLabel').textContent = `${a}% - ${b}%`;
+            return [a, b];
+        }
+        function syncSp() { const [a, b] = spRange(); $('spLabel').textContent = `${a}% - ${b}%`; }
+        // Same rule as the server's filter and Species Queue: least sure bird.
+        function speciesConf(s) {
+            const c = countedBirds(s).map(d => d.confidence_aiy).filter(v => v != null);
+            return c.length ? Math.min(...c) : s.confidence_aiy;
+        }
+        function photoName(s) { return birdSummary(s) || s.species_confirmed || s.common_name || s.species_aiy || 'Unknown'; }
+        function esc(t) { const d = document.createElement('div'); d.textContent = t ?? ''; return d.innerHTML; }
+
+        async function loadSpecies() {
+            const res = await fetch('/api/species-list?review_status=approved');
+            const data = await res.json();
+            data.species.forEach(sp => {
+                const o = document.createElement('option');
+                o.value = sp.value; o.textContent = sp.label;
+                $('species').appendChild(o);
+            });
         }
 
         // Presets just set the underlying filters, so what you see in the
@@ -186,26 +202,21 @@ PAGE = r"""
         function preset(p) {
             activePreset = p;
             document.querySelectorAll('#presets button').forEach(b => b.classList.toggle('on', b.dataset.p === p));
-            $('detMin').value = 0; $('detMax').value = 100;
-            // "No bird" sorts highest-detection first, so the borderline
-            // photos most worth a second look come up top.
-            if (p === 'nobird') $('sortBy').value = 'det_conf';
-            syncDet();
+            syncSp();
             applyFilters();
         }
 
         function filterParams() {
-            let a = +$('detMin').value, b = +$('detMax').value;
-            if (a > b) { [a, b] = [b, a]; }
-            const f = { review_status: 'pending_review', species_id_status: 'not_queued' };
+            const [a, b] = spRange();
+            const f = { review_status: 'approved' };
             if ($('dateFrom').value) f.date_from = $('dateFrom').value;
             if ($('dateTo').value) f.date_to = $('dateTo').value;
-            if (a > 0 || b < 100) { f.det_conf_min = a / 100; f.det_conf_max = b / 100; }
+            if ($('species').value) f.species = $('species').value;
+            if (a > 0 || b < 100) { f.sp_conf_min = a / 100; f.sp_conf_max = b / 100; }
             if (activePreset === 'nobird') f.animal_max = 0;
             if (activePreset === 'bird') f.animal_min = 1;
             if (activePreset === 'multi') f.animal_min = 2;
             if (activePreset === 'person') f.has_person = true;
-            if (activePreset === 'pending') f.detect_status = 'pending';
             return f;
         }
 
@@ -245,7 +256,7 @@ PAGE = r"""
             $('btnPrev').disabled = currentPage <= 1;
             $('btnNext').disabled = currentPage >= pages;
             $('btnAllQueue').disabled = $('btnAllReject').disabled = total === 0;
-            $('btnAllQueue').textContent = `Send all ${total} matching to Species Queue`;
+            $('btnAllQueue').textContent = `Send all ${total} matching back to Species Queue`;
             $('btnAllReject').textContent = `Reject all ${total} matching`;
         }
 
@@ -256,13 +267,14 @@ PAGE = r"""
                 return;
             }
             tbody.innerHTML = allSightings.map((s, idx) => {
-                const best = s.detect_status === 'done' ? Math.round((s.max_det_conf || 0) * 100) : null;
-                const bar = best === null ? '<small style="color:#999">-</small>'
-                    : `${best}%<div class="bar"><span style="width:${best}%; background:${best >= THR * 100 ? '#28a745' : '#adb5bd'}"></span></div>`;
+                const sc = speciesConf(s);
+                const pct = sc == null ? null : Math.round(sc * 100);
+                const bar = pct === null ? '<small style="color:#999">-</small>'
+                    : `${pct}%<div class="bar"><span style="width:${pct}%; background:${pct >= 50 ? '#28a745' : pct >= 20 ? '#ffc107' : '#dc3545'}"></span></div>`;
                 const people = (s.person_count || 0) > 0 ? ' <span class="dbadge" style="background:#ffe0b2;color:#8a4b00">person</span>' : '';
                 return `<tr><td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td>
                     <td><img src="/images/${s.filename}" class="thumb" loading="lazy" onclick="openPreview(${idx})"></td>
-                    <td>${detectorBadge(s)}${people}</td>
+                    <td>${esc(photoName(s))}<br>${detectorBadge(s)}${people}</td>
                     <td>${bar}</td>
                     <td><small>${s.timestamp.replace('T', ' ').slice(0, 16)}</small></td></tr>`;
             }).join('');
@@ -294,15 +306,15 @@ PAGE = r"""
             const img = $('previewImg');
             img.src = `/images/${s.filename}`;
             drawBoxes(img, s, boxOpts);
-            const n = countedBirds(s).length;
-            $('previewBirds').innerHTML = s.detect_status === 'pending' ? 'Not scanned yet'
-                : (n ? `${n} bird${n > 1 ? 's' : ''} found` : 'No bird found')
-                  + ((s.person_count || 0) > 0 ? ' &middot; person' : '');
+            const sc = speciesConf(s);
+            $('previewBirds').innerHTML = esc(photoName(s))
+                + (sc != null ? ` &middot; species confidence ${pctText(sc)}` : '')
+                + ((s.person_count || 0) > 0 ? ' &middot; person' : '');
             $('previewMeta').textContent = `${s.timestamp.replace('T', ' ').slice(0, 16)}  (${previewIndex + 1} of ${allSightings.length} on this page)`;
         }
-        // Manage shows the DETECTOR's % (is it a bird at all?); a click on a
-        // box excludes it / includes it again, saved immediately.
-        const boxOpts = { pct: 'det', onClick: async d => {
+        // Boxes show AIY's species % (since 2026-10-25, like Gallery); a
+        // click on a box excludes it / includes it again, saved immediately.
+        const boxOpts = { pct: 'aiy', onClick: async d => {
             const s = allSightings[previewIndex];
             if (!s) return;
             if (!(await setExcluded(s, d, !d.excluded))) { showInfo('Could not save that - try again.'); return; }
@@ -320,9 +332,9 @@ PAGE = r"""
             if (previewIndex < 0) return;
             const s = allSightings[previewIndex];
             if (action === 'approve') {
+                // Back to Species Queue to rename - leaves the Gallery until re-posted
                 const res = await fetch(`/api/sightings/${s.id}/queue-species-id`, { method: 'POST' });
-                const data = await res.json();
-                if (data.already_in_pipeline) { showInfo(`Already in the pipeline (${data.species_id_status})`); return; }
+                if (!res.ok) { showInfo('Could not send it back - try again.'); return; }
             } else {
                 await fetch(`/api/sightings/${s.id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) });
             }
@@ -347,7 +359,8 @@ PAGE = r"""
         });
 
         function clearFilters() {
-            $('dateFrom').value = ''; $('dateTo').value = '';
+            $('dateFrom').value = ''; $('dateTo').value = ''; $('species').value = '';
+            $('spMin').value = 0; $('spMax').value = 100;
             $('sortBy').value = 'timestamp';
             preset('all');
         }
@@ -365,15 +378,15 @@ PAGE = r"""
             showInfo(`${verb}: ${ids.length} done`);
             await loadSightings();
         }
-        function acceptSelected() {
-            eachSelected('Send to Species Queue', id => fetch(`/api/sightings/${id}/queue-species-id`, { method: 'POST' }));
+        function requeueSelected() {
+            eachSelected('Send back to Species Queue', id => fetch(`/api/sightings/${id}/queue-species-id`, { method: 'POST' }));
         }
         function deleteSelected() {
             eachSelected('Reject to Trash', id => fetch(`/api/sightings/${id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) }));
         }
 
         async function bulk(action) {
-            const verb = action === 'reject' ? 'Reject to Trash' : 'Send to Species Queue';
+            const verb = action === 'reject' ? 'Reject to Trash' : 'Send back to Species Queue';
             if (!confirm(`${verb}: ALL ${total} photos matching the current filter (every page, not just this one)?` +
                          (action === 'reject' ? '\n\nThey go to Trash, so this can still be undone from there.' : ''))) return;
             setBusy(true, `${verb}: ${total} photos...`);
@@ -400,8 +413,8 @@ PAGE = r"""
             else overlay.classList.remove('active');
         }
 
-        syncDet();
-        loadSightings();
+        syncSp();
+        loadSpecies().then(loadSightings);
     </script>
 </body>
 </html>
@@ -410,12 +423,10 @@ PAGE = r"""
 
 @router.get("/manage")
 async def manage_page():
-    """Bird / no-bird screening of fresh arrivals (pending_review, not yet
-    queued). Filter by what MegaDetector found, batch-reject or batch-queue
-    every match, or step through one photo at a time with boxes drawn on."""
-    from main import DETECTOR_CONFIG
-    thr = round(DETECTOR_CONFIG["count_threshold"] * 100)
+    """Cleanup view over the Gallery (posted photos). Filter by species,
+    species confidence, bird count or person; reject or send back to
+    Species Queue - one at a time in the preview, a selection, or every
+    match across pages."""
     html = (PAGE.replace("__BOXES_CSS__", BOXES_CSS).replace("__DBADGE_CSS__", DBADGE_CSS)
-                .replace("__BOXES_JS__", BOXES_JS).replace("__NAV__", NAV_HTML)
-                .replace("__THR__", str(thr)))
+                .replace("__BOXES_JS__", BOXES_JS).replace("__NAV__", NAV_HTML))
     return HTMLResponse(html)

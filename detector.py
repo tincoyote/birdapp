@@ -4,7 +4,8 @@ Added 2026-10-20 to replace the laptop SpeciesNet step (see
 docs/PLAN-detector.md for the measurements behind that decision).
 
 What it does for each photo whose sightings.detect_status = 'pending':
-  1. MegaDetector v5a finds every animal / person / vehicle and its box.
+  1. MegaDetector v5a finds every animal / person / vehicle and its box
+     (classes in skip_categories - vehicles by default - are dropped).
   2. Each animal box (+15% margin) is cropped and classified by AIY - one
      species guess per bird, so a photo with a finch pair and a jay gets
      three rows in `detections`, not one name for the whole photo.
@@ -48,6 +49,11 @@ DEFAULTS = {
     # table (visible as faint boxes) but not counted or classified - so the
     # threshold can be lowered later without re-running everything.
     "store_threshold": 0.1,
+    # Detector classes never stored or boxed (2026-10-25: parked cars on the
+    # street were getting "vehicle" boxes all over the Gallery). Possible
+    # values: "animal", "person", "vehicle". Pages also hide any older rows
+    # of these classes, so no re-scan is needed.
+    "skip_categories": ["vehicle"],
     "crop_margin": 0.15,
     "image_size": 1280,
     # CPU threads for PyTorch. The DS923+ has 2 cores / 4 threads, shared
@@ -131,7 +137,8 @@ def analyze(md, image_path, cfg):
     image - no DB access - so it can be tested standalone."""
     with Image.open(image_path) as im:
         img = im.convert("RGB")
-    dets = md.detect(img, cfg["store_threshold"])
+    skip = set(cfg.get("skip_categories") or [])
+    dets = [d for d in md.detect(img, cfg["store_threshold"]) if d["category"] not in skip]
     for d in dets:
         d["species_aiy"], d["confidence_aiy"] = None, None
         if d["category"] == "animal" and d["conf"] >= cfg["count_threshold"]:

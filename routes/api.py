@@ -10,38 +10,39 @@ router = APIRouter()
 async def update_review_status(sighting_id: int, body: dict):
     """Update review_status: 'pending_review', 'approved', or 'rejected'.
     Also stamps review_updated_at so trash/gallery can sort by 'most
-    recently changed' - critical for finding a just-made mistake fast."""
-    from main import DB_PATH
+    recently changed' - critical for finding a just-made mistake fast.
+
+    'pending_review' (Trash's Restore) means "back to Species Queue" since
+    2026-10-25, so it goes through main.queue_for_review - otherwise a photo
+    restored after being posted would sit in limbo, shown on no page."""
+    from main import DB_PATH, queue_for_review
+    status = body.get("review_status")
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE sightings SET review_status = ?, review_updated_at = ? WHERE id = ?",
-        (body.get("review_status"), datetime.now().isoformat(), sighting_id)
-    )
+    if status == "pending_review":
+        queue_for_review(cursor, "id = ?", [sighting_id])
+    else:
+        cursor.execute(
+            "UPDATE sightings SET review_status = ?, review_updated_at = ? WHERE id = ?",
+            (status, datetime.now().isoformat(), sighting_id)
+        )
     conn.commit()
     conn.close()
-    return {"updated": True, "id": sighting_id, "review_status": body.get("review_status")}
+    return {"updated": True, "id": sighting_id, "review_status": status}
 
 
 @router.post("/api/sightings/{sighting_id}/resend-classifier")
 async def resend_classifier(sighting_id: int):
-    """Re-run the AIY classifier on a single sighting, AND send it back to
-    Manage's initial-screening state - review_status='pending_review',
-    species_id_status='not_queued', needs_species_id=0 - regardless of what
-    state it was in before. This is deliberate: resending IS how a sighting
-    gets back to Manage, from anywhere in the pipeline (Manage itself,
-    Species Queue, or Gallery), rather than a separate "send back" action.
-    For a sighting already in Manage (already pending_review/not_queued,
-    which is everything Manage shows now that it filters on
-    species_id_status - see routes/manage.py) this reset is a no-op on
-    those three fields; calling it from Species Queue or Gallery is what
-    actually changes them. Increments classification_attempts each time
-    this is called, from any page.
+    """Re-scan one sighting and send it to Species Queue, from anywhere
+    (Species Queue itself, Gallery, Manage).
 
-    Since 2026-10-20 it also sets detect_status='pending', so the
-    MegaDetector worker re-finds the birds and re-runs AIY on each crop
-    (the full-frame AIY result below is just the placeholder until then)."""
-    from main import DB_PATH, DATA_DIR, classify_aiy, compute_agreement, common_names
+    Sets detect_status='pending', so the MegaDetector worker re-finds the
+    birds and re-runs AIY on each crop (~9-16 s); the full-frame AIY result
+    below is just the placeholder until then. The photo shows in Species
+    Queue as "still scanning" meanwhile. Until 2026-10-25 this sent the
+    photo back to Manage's bird/no-bird screen instead; that stage is gone.
+    Increments classification_attempts each time."""
+    from main import DB_PATH, DATA_DIR, classify_aiy, compute_agreement, common_names, queue_for_review
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -61,74 +62,48 @@ async def resend_classifier(sighting_id: int):
     cursor.execute(
         """UPDATE sightings
            SET species_aiy = ?, confidence_aiy = ?, classifier_agreement = ?,
-               common_name = ?, classification_attempts = ?,
-               review_status = 'pending_review', species_id_status = 'not_queued',
-               needs_species_id = 0, detect_status = 'pending'
+               common_name = ?, classification_attempts = ?, detect_status = 'pending'
            WHERE id = ?""",
         (species_aiy, confidence_aiy, agreement, common_name, new_attempts, sighting_id)
     )
+    queue_for_review(cursor, "id = ?", [sighting_id])
     conn.commit()
     conn.close()
     return {
         "id": sighting_id, "species_aiy": species_aiy, "confidence_aiy": confidence_aiy,
         "common_name": common_name, "classification_attempts": new_attempts,
-        "review_status": "pending_review", "species_id_status": "not_queued"
+        "review_status": "pending_review", "species_id_status": "queued"
     }
 
 
 @router.post("/api/sightings/{sighting_id}/queue-species-id")
 async def queue_species_id(sighting_id: int):
-    """Send a sighting to the species-ID queue. This is Manage's replacement
-    for the old 'Accept to Gallery' action under the revised flow: Manage
-    cleanses the incoming feed (keep/reject junk), but 'keep' no longer means
-    straight to Gallery - it means 'worth a species ID'. The actual Gallery
-    entry point is now /confirm-species on the Species Queue page, which
-    sets review_status='approved' itself once a human has picked a winner.
+    """Send a sighting to Species Queue WITHOUT re-scanning it - Manage's
+    "back to Species Queue" for a Gallery photo whose name needs fixing.
+    It leaves the Gallery until it's posted again. (Resend is the same
+    plus a fresh detector run.)
 
-    Most photos are already auto-queued by the gating logic in
-    classify_and_save() before a human ever sees them in Manage - this
-    endpoint's real value is overriding AIY's own gating call on something
-    it silently dropped (e.g. tagging a real squirrel as 'background').
-
-    Idempotent, but only against a genuine mid-flight state. Only 'queued'
-    is skipped - a sighting still on its first pass through the pipeline
-    (auto-queued, waiting on SpeciesNet) shouldn't get silently reset just
-    because this endpoint got called again, which is what caused duplicate
-    SpeciesNet runs on 2026-09-11. 'classified' and 'confirmed' are both
-    deliberately NOT skipped, for the same underlying reason even though
-    they were fixed on different dates: both are completed states, not
-    mid-flight ones, and a human calling this endpoint again on a completed
-    sighting is asking for a legitimate re-run, not accidentally repeating
-    a first pass. 'confirmed' was fixed 2026-09-12 after an earlier version
-    treated it as terminal and silently broke Gallery's "send back to
-    review" workflow. 'classified' had the identical bug until 2026-09-20:
-    discovered when a photo's official SpeciesNet result had rolled up to
-    a coarse label, its own raw classifier output actually had the right
-    species, and there was no way to ask for a fresh pass after fixing the
-    crop box - the endpoint just silently no-opped, because 'classified'
-    was (wrongly) grouped with 'queued' as if still in progress."""
-    from main import DB_PATH
+    History: until 2026-10-25 this was Manage's "worth a species ID" button
+    for fresh arrivals; new photos now go to Species Queue on their own.
+    Earlier fixes still apply: a 'classified' or 'confirmed' photo IS
+    requeued (2026-09-12 / 2026-09-20 - a completed photo sent again is a
+    deliberate re-review); only a photo already waiting in the queue is a
+    no-op."""
+    from main import DB_PATH, queue_for_review
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT species_id_status, detect_status FROM sightings WHERE id = ?", (sighting_id,))
+    cursor.execute("SELECT species_id_status, review_status FROM sightings WHERE id = ?", (sighting_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
         return {"error": "Sighting not found"}
-    current_status, detect_status = row
-    if current_status == "queued":
+    current_status, review_status = row
+    if review_status == "pending_review" and current_status in ("queued", "classified"):
         conn.close()
         return {"id": sighting_id, "species_id_status": current_status, "already_in_pipeline": True}
-
-    # 2026-10-20: the "second opinion" is now the in-container detector, not
-    # the laptop. If it has already run, the per-bird names are ready - go
-    # straight to 'classified'. Otherwise 'queued', and the worker promotes
-    # it when it finishes (detector.save_results).
-    new_status = "classified" if detect_status == "done" else "queued"
-    cursor.execute(
-        "UPDATE sightings SET needs_species_id = 1, species_id_status = ? WHERE id = ?",
-        (new_status, sighting_id)
-    )
+    queue_for_review(cursor, "id = ?", [sighting_id])
+    cursor.execute("SELECT species_id_status FROM sightings WHERE id = ?", (sighting_id,))
+    new_status = cursor.fetchone()[0]
     conn.commit()
     conn.close()
     return {"id": sighting_id, "species_id_status": new_status, "already_in_pipeline": False}

@@ -8,9 +8,10 @@ router = APIRouter()
 @router.get("/gallery")
 async def gallery_page():
     """Gallery: approved sightings only. Browse by date/species, group either
-    way, preview with next/prev navigation, resend to classifier (which also
-    sends the photo back to Manage for a fresh look - see /resend-classifier
-    in routes/api.py)."""
+    way, preview with next/prev navigation, resend to classifier (re-scans
+    the photo and sends it straight back to Species Queue to rename - see
+    /resend-classifier in routes/api.py; until 2026-10-25 it went back
+    through Manage first)."""
     html = """
     <!DOCTYPE html>
     <html>
@@ -104,7 +105,7 @@ async def gallery_page():
                 <div id="lightboxCommon" style="font-size:20px; font-weight:600;"></div>
                 <div id="lightboxMeta" style="font-size:13px; color:#ccc; margin-top:4px;"></div>
                 <div class="bx-toggle" onclick="toggleBoxes(document.getElementById('lightboxImg'), flatList[lightboxIndex], boxOpts)">show / hide boxes (b) &middot; click a box to exclude it</div>
-                <button class="resend-classifier" onclick="resendToClassifier()">Resend to Classifier</button>
+                <button class="resend-classifier" onclick="resendToClassifier()" title="Re-scan for birds and send back to Species Queue to rename">Resend to Classifier (back to Species Queue)</button>
             </div>
         </div>
 
@@ -294,10 +295,9 @@ async def gallery_page():
             async function resendToClassifier() {
                 if (lightboxIndex < 0) return;
                 const s = flatList[lightboxIndex];
-                // Re-runs AIY AND resets review_status/species_id_status back
-                // to Manage's fresh, not-yet-screened state in one call - see
-                // /resend-classifier's docstring in routes/api.py. This is now
-                // the only way a Gallery photo gets back to Manage.
+                // Re-scans it and moves it to Species Queue in one call (it
+                // leaves the Gallery until it's posted again) - see
+                // /resend-classifier's docstring in routes/api.py.
                 await fetch(`/api/sightings/${s.id}/resend-classifier`, { method: 'POST' });
                 allSightings = allSightings.filter(x => x.id !== s.id);
                 renderGallery();

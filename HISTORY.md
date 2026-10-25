@@ -223,6 +223,30 @@ common name in `common_names.csv`, so the dropdown never offered it. 83 such
 gaps (Cooper's Hawk, Nuttall's Woodpecker, Ruby-crowned Kinglet...) were
 filled at the same time.
 
+## Manage moves behind the Gallery (2026-10-25)
+
+With the detector + per-bird AIY running on every photo in ~9-16 s, the
+Manage bird/no-bird screen in front of Species Queue had become a second
+pass over the same question: Species Queue was already showing the boxes
+and counts, and "send to Species Queue" was a click on nearly everything.
+New photos now go straight to Species Queue, which gained a bird-confidence
+slider (the detector number Manage used to filter on). Manage became a
+cleanup view over the Gallery, filtering on species confidence instead -
+the question that matters once a photo is posted is "is this name right",
+not "is there a bird".
+
+Moving the gate exposed a limbo state: Trash's Restore set
+review_status='pending_review' without touching species_id_status, so a
+photo restored after being posted showed on no page at all. Every path
+into Species Queue now goes through one function (`queue_for_review`), and
+a startup check moves any stranded photos in.
+
+Vehicle boxes (parked cars) are no longer stored, and older ones are hidden.
+
+**Lesson**: when a review stage stops changing decisions, remove it rather
+than keep feeding it - and when moving a gate, list every path that writes
+the state it guarded, not just the main one.
+
 ## General
 
 Across all of the above, the recurring pattern worth naming explicitly:

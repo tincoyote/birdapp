@@ -72,6 +72,17 @@ capacity, the next one reads this, checks the status list, and continues.
   photo; sort by the same value.
 - Trash: click a thumbnail to view (boxes, arrows, r = restore).
 
+## Round 3 (2026-10-25)
+- Manage stage removed from intake: capture -> Species Queue directly
+  (main.queue_for_review; startup reconcile moves Manage's backlog in).
+- Species Queue: "Bird confidence" slider (max_det_conf) + sort by it.
+  Resend keeps the photo in the queue, shown as scanning.
+- Manage = Gallery cleanup: species filter, species-confidence slider
+  (least sure bird, server-side via main._species_conf_sql), bulk reject /
+  send back to Species Queue. Box % on Manage is now AIY's, like Gallery.
+- Vehicles: detector.skip_categories (default ["vehicle"]) - not stored,
+  old rows hidden in main._attach_detections.
+
 ## Known follow-ups (not done)
 - Species dropdown can list one species twice: once as a bare Latin value
   (unconfirmed AIY guess) and once as a confirmed "Common (Latin)" string.
