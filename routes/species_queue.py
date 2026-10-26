@@ -67,6 +67,18 @@ PAGE = r"""
         .bird-num { background: #2ecc71; color: #000; font-weight: 700; font-size: 12px; border-radius: 3px; padding: 2px 6px; min-width: 22px; text-align: center; }
         .bird-row input { flex: 1; min-width: 220px; padding: 7px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
         .bird-row input:disabled { background: #555; color: #aaa; text-decoration: line-through; }
+        /* Name picker (2026-10-25): replaces the browser's <datalist>, whose
+           arrow only listed names matching what was already in the box. */
+        .nm-wrap { position: relative; flex: 1; min-width: 220px; display: flex; }
+        .nm-wrap input { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+        .nm-arrow { padding: 0 10px; border-radius: 0 4px 4px 0; background: #e9ecef; color: #333; font-size: 12px; }
+        .nm-list { display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 260px; overflow-y: auto;
+                   background: white; color: #222; border: 1px solid #999; border-radius: 0 0 4px 4px; z-index: 1000;
+                   font-size: 13px; text-align: left; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+        .nm-list.open { display: block; }
+        .nm-opt { padding: 5px 8px; cursor: pointer; }
+        .nm-opt.hi { background: #007bff; color: white; }
+        .nm-none { padding: 6px 8px; color: #888; font-style: italic; }
         .aiy-conf { font-size: 11px; color: #ccc; min-width: 70px; }
         .post-row { display: flex; gap: 8px; margin: 12px 0; }
         .post-row button { flex: 1; padding: 10px; font-size: 14px; }
@@ -138,7 +150,6 @@ PAGE = r"""
         <div class="grid" id="grid"></div>
     </div>
 
-    <datalist id="nameList">__NAME_OPTIONS__</datalist>
 
     <div class="lightbox" id="lightbox">
         <span class="lb-close" onclick="closeLightbox()">&times;</span>
@@ -385,8 +396,7 @@ PAGE = r"""
                 const conf = d.confidence_aiy != null ? `AIY ${pctText(d.confidence_aiy)}` : 'AIY -';
                 panel += `<div class="bird-row">
                     <span class="bird-num" style="${d.excluded ? 'background:#888' : ''}">${i + 1}</span>
-                    <input list="nameList" id="name-${d.id}" value="${escAttr(dr.name)}" ${d.excluded ? 'disabled' : ''}
-                           oninput="drafts[${r.id}][${d.id}].name = this.value" placeholder="Name this bird...">
+                    ${nameBox(r.id, d.id, dr.name, 'Name this bird...', d.excluded)}
                     <span class="aiy-conf">${conf}</span>
                     ${d.excluded ? '' : quickButtons(r.id, d.id)}
                     ${exBtn}
@@ -395,8 +405,7 @@ PAGE = r"""
             if (!birdsOf(r).length) {
                 // No bird left to name - one name for the whole photo
                 panel += `<div class="bird-row">
-                    <input list="nameList" id="name-photo" value="${escAttr(draft.photo.name)}"
-                           oninput="drafts[${r.id}].photo.name = this.value" placeholder="No bird found - name it anyway...">
+                    ${nameBox(r.id, 'photo', draft.photo.name, 'No bird found - name it anyway...', false)}
                     ${quickButtons(r.id, 'photo')}
                 </div>`;
             }
@@ -406,6 +415,84 @@ PAGE = r"""
                     <button class="btn-danger" onclick="deleteItem(${r.id})">Delete</button>
                 </div>`;
             document.getElementById('lbPanel').innerHTML = panel;
+        }
+
+        // ---------- name picker ----------
+        // Type part of a common or Latin name (any order: "fin hou" finds
+        // House Finch); the arrow shows the full list. Up/Down + Enter or
+        // Tab picks, Esc closes, Ctrl+Enter posts.
+        const allNames = __NAMES_JSON__;
+        let nmActive = null, nmHi = -1, nmShown = [];
+        function nameBox(sid, did, value, placeholder, disabled) {
+            const id = did === 'photo' ? 'name-photo' : `name-${did}`;
+            return `<div class="nm-wrap">
+                <input id="${id}" value="${escAttr(value)}" placeholder="${placeholder}" autocomplete="off" ${disabled ? 'disabled' : ''}
+                       data-sid="${sid}" data-did="${did}" oninput="nmInput(this)" onkeydown="nmKey(event, this)" onblur="nmClose()">
+                ${disabled ? '' : `<button class="nm-arrow" tabindex="-1" onmousedown="event.preventDefault()" onclick="nmToggle(this)">&#9662;</button>`}
+                <div class="nm-list"></div></div>`;
+        }
+        function nmSave(input) {
+            const sid = +input.dataset.sid, did = input.dataset.did;
+            if (did === 'photo') drafts[sid].photo.name = input.value;
+            else drafts[sid][did].name = input.value;
+        }
+        function nmMatches(q) {
+            const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+            if (!words.length) return allNames;
+            const hits = allNames.filter(n => { const l = n.toLowerCase(); return words.every(w => l.includes(w)); });
+            // Best first: names where each typed word starts a word ("fin hou"
+            // -> House Finch before Cassin's Finch), then alphabetical.
+            const score = n => words.filter(w => new RegExp('(^|[\\s(\'-])' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(n.toLowerCase())).length;
+            return hits.map(n => [score(n), n]).sort((a, b) => b[0] - a[0] || a[1].localeCompare(b[1])).map(x => x[1]);
+        }
+        function nmOpen(input, names) {
+            nmActive = input; nmShown = names;
+            nmHi = Math.max(0, nmShown.indexOf(input.value));
+            if (!nmShown.length) nmHi = -1;
+            const list = input.parentElement.querySelector('.nm-list');
+            list.innerHTML = nmShown.length
+                ? nmShown.map((n, i) => `<div class="nm-opt${i === nmHi ? ' hi' : ''}" onmousedown="event.preventDefault(); nmPick(${i})">${esc(n)}</div>`).join('')
+                : '<div class="nm-none">No match - post it as typed, or keep typing</div>';
+            list.classList.add('open');
+            const hi = list.querySelector('.hi'); if (hi) hi.scrollIntoView({ block: 'nearest' });
+        }
+        function nmClose() {
+            document.querySelectorAll('.nm-list.open').forEach(l => l.classList.remove('open'));
+            nmActive = null; nmHi = -1;
+        }
+        function nmInput(input) { nmSave(input); nmOpen(input, nmMatches(input.value)); nmHi = nmShown.length ? 0 : -1; nmMark(); }
+        function nmToggle(btn) {
+            const input = btn.parentElement.querySelector('input');
+            if (nmActive === input) { nmClose(); return; }
+            input.focus();
+            nmOpen(input, allNames);   // the arrow always shows every name
+        }
+        function nmMark() {
+            if (!nmActive) return;
+            const opts = nmActive.parentElement.querySelectorAll('.nm-opt');
+            opts.forEach((o, i) => o.classList.toggle('hi', i === nmHi));
+            if (opts[nmHi]) opts[nmHi].scrollIntoView({ block: 'nearest' });
+        }
+        function nmPick(i) {
+            if (!nmActive || !nmShown[i]) return;
+            const input = nmActive;
+            input.value = nmShown[i];
+            nmSave(input);
+            nmClose();
+        }
+        function nmKey(e, input) {
+            const open = nmActive === input;
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!open) { nmOpen(input, nmMatches(input.value)); return; }
+                nmHi = Math.min(nmShown.length - 1, Math.max(0, nmHi + (e.key === 'ArrowDown' ? 1 : -1)));
+                nmMark();
+            } else if ((e.key === 'Enter' && !e.ctrlKey) || e.key === 'Tab') {
+                if (open && nmHi >= 0) { e.preventDefault(); nmPick(nmHi); }
+                else if (e.key === 'Enter') e.preventDefault();
+            } else if (e.key === 'Escape' && open) {
+                e.preventDefault(); e.stopPropagation(); nmClose();
+            }
         }
 
         function setName(sid, did, name) {
@@ -546,12 +633,11 @@ async def species_queue_page():
 
     names = sorted({f"{c} ({s})" for s, c in common_names.items() if c and s != "background"} | set(EXTRA_NAMES),
                    key=str.lower)
-    options = "".join(f'<option value="{html_module.escape(n, quote=True)}">' for n in names)
 
     html = (PAGE.replace("__BOXES_CSS__", BOXES_CSS).replace("__DBADGE_CSS__", DBADGE_CSS)
                 .replace("__BOXES_JS__", BOXES_JS)
                 .replace("__NAV__", NAV_HTML)
-                .replace("__NAME_OPTIONS__", options)
+                .replace("__NAMES_JSON__", json_module.dumps(names).replace("<", "\\u003c"))
                 .replace("__QUICK_NAMES__", json_module.dumps(QUICK_NAMES))
                 .replace("__QUEUE_TOTAL__", str(total))
                 .replace("__QUEUE_DATA__", json_module.dumps(rows).replace("<", "\\u003c")))

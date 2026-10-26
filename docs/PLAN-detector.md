@@ -80,6 +80,12 @@ capacity, the next one reads this, checks the status list, and continues.
 - Manage = Gallery cleanup: species filter, species-confidence slider
   (least sure bird, server-side via main._species_conf_sql), bulk reject /
   send back to Species Queue. Box % on Manage is now AIY's, like Gallery.
+- Startup reconcile only moves pending_review strays. It must NOT move
+  approved + queued/classified: that's mostly Sept-2026 Gallery photos
+  (auto-queued at capture, approved from Manage, marked classified by the
+  laptop SpeciesNet run). Caught before deploy.
+- Species Queue name box: own picker instead of <datalist> (arrow = full
+  list, typed words match anywhere, word-start matches first).
 - Vehicles: detector.skip_categories (default ["vehicle"]) - not stored,
   old rows hidden in main._attach_detections.
 

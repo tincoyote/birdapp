@@ -178,24 +178,27 @@ def queue_for_review(cursor, where, params):
 
 
 def reconcile_review_queue(db_path):
-    """Run at startup. Moves photos stranded by the old flow into Species Queue:
-      - Manage's backlog (pending_review, never queued), and photos restored
-        from Trash after being posted (pending_review + confirmed)
-      - Gallery photos once sent back for renaming but never re-posted
-        (approved + queued/classified) - they were sent back to be fixed,
-        so they leave the Gallery until they are.
+    """Run at startup. Moves photos stranded by the old flow into Species
+    Queue: Manage's backlog (pending_review, never queued), and photos
+    restored from Trash after being posted (pending_review + confirmed),
+    which used to show on no page at all.
+
+    Deliberately does NOT touch approved photos whose species_id_status is
+    'queued'/'classified': in the Sept 2026 flow, photos were auto-queued at
+    capture, approved to the Gallery straight from Manage, and then marked
+    'classified' by the laptop SpeciesNet run - so that state mostly means
+    "old Gallery photo", not "sent back to be renamed". They stay in the
+    Gallery (and, since Species Queue now lists only pending_review, no
+    longer show up in both places).
     Idempotent: on a healthy database it changes nothing."""
     conn = sqlite3.connect(db_path, timeout=30)
     try:
         cur = conn.cursor()
-        a = queue_for_review(cur, "review_status = 'pending_review' "
+        n = queue_for_review(cur, "review_status = 'pending_review' "
                                   "AND species_id_status NOT IN ('queued', 'classified')", [])
-        b = queue_for_review(cur, "review_status = 'approved' "
-                                  "AND species_id_status IN ('queued', 'classified')", [])
         conn.commit()
-        if a or b:
-            logger.info("Species Queue: moved in %s photo(s) from the old Manage stage, "
-                        "%s sent back from Gallery", a, b)
+        if n:
+            logger.info("Species Queue: moved in %s photo(s) left over from the old Manage stage", n)
     finally:
         conn.close()
 
