@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Query, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
-from migration import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4, migrate_v4_to_v5, migrate_v5_to_v6, migrate_v6_to_v7
+from migration import migrate_v1_to_v2, migrate_v2_to_v3, migrate_v3_to_v4, migrate_v4_to_v5, migrate_v5_to_v6, migrate_v6_to_v7, migrate_v7_to_v8
 import aiy
 import detector
 from routes.nav import NAV_HTML
@@ -210,6 +210,7 @@ migrate_v3_to_v4(DB_PATH)
 migrate_v4_to_v5(DB_PATH)
 migrate_v5_to_v6(DB_PATH)
 migrate_v6_to_v7(DB_PATH)
+migrate_v7_to_v8(DB_PATH)
 reconcile_review_queue(DB_PATH)
 
 # --- AIY (Google) bird classifier: loads once at startup, fails soft if files
@@ -484,7 +485,7 @@ def _build_filter_where(f: dict):
 _SPECIES_MATCH = """(
     COALESCE(species_confirmed, species_aiy) = ?
     OR EXISTS (SELECT 1 FROM detections d WHERE d.sighting_id = sightings.id
-               AND d.category = 'animal' AND d.det_conf >= ?
+               AND d.category = 'animal' AND d.det_conf >= COALESCE(sightings.count_threshold, ?)
                AND COALESCE(d.species_confirmed, '') != '__ignore__'
                AND COALESCE(d.species_confirmed, d.species_aiy) = ?)
 )"""
@@ -499,7 +500,8 @@ def _species_conf_sql():
     thr = float(DETECTOR_CONFIG["count_threshold"])
     return ("COALESCE((SELECT MIN(d.confidence_aiy) FROM detections d "
             "WHERE d.sighting_id = sightings.id AND d.category = 'animal' "
-            f"AND d.det_conf >= {thr!r} AND COALESCE(d.species_confirmed, '') != '__ignore__' "
+            f"AND d.det_conf >= COALESCE(sightings.count_threshold, {thr!r}) "
+            "AND COALESCE(d.species_confirmed, '') != '__ignore__' "
             "AND d.confidence_aiy IS NOT NULL), confidence_aiy)")
 
 
@@ -570,12 +572,15 @@ def _attach_detections(cursor, items):
                               confidence_aiy, common_name, species_confirmed, species_confirmed_source
                        FROM detections WHERE sighting_id IN ({marks}) ORDER BY sighting_id, idx""",
                    list(by_id))
-    thr = DETECTOR_CONFIG["count_threshold"]
+    default_thr = DETECTOR_CONFIG["count_threshold"]
     skip = set(DETECTOR_CONFIG.get("skip_categories") or [])
     for r in cursor.fetchall():
         d = dict(r)
         if d["category"] in skip:
             continue  # e.g. vehicles stored before 2026-10-25 - never shown
+        # Each photo keeps the threshold it was scanned at (2026-10-26), so
+        # raising it for new scans doesn't change older photos.
+        thr = by_id[d["sighting_id"]].get("count_threshold") or default_thr
         # listed: strong enough to get a number and a row (any category)
         # excluded: a human said "not a bird / not a person" for this box
         # counted: a bird/animal that counts and gets named
@@ -811,7 +816,7 @@ async def species_list(review_status: str = Query(None), username: str = Depends
         UNION
         SELECT COALESCE(d.species_confirmed, d.species_aiy) FROM detections d
         JOIN sightings ON sightings.id = d.sighting_id
-        WHERE {where} AND d.category = 'animal' AND d.det_conf >= ?
+        WHERE {where} AND d.category = 'animal' AND d.det_conf >= COALESCE(sightings.count_threshold, ?)
           AND COALESCE(d.species_confirmed, '') != '__ignore__'
           AND COALESCE(d.species_confirmed, d.species_aiy) IS NOT NULL
     """, params + params + (DETECTOR_CONFIG["count_threshold"],))

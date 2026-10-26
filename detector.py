@@ -179,8 +179,8 @@ def save_results(db_path, sighting_id, dets, cfg, common_names, model_name):
                         "WHERE sighting_id = ? AND category = 'animal' AND det_conf >= ?",
                         (confirmed, confirmed_src, sighting_id, thr))
         sets = ["detect_status = 'done'", "animal_count = ?", "person_count = ?", "max_det_conf = ?",
-                "detector_model = ?", "detected_at = ?"]
-        params = [len(animals), len(people), max_conf, model_name, now]
+                "detector_model = ?", "detected_at = ?", "count_threshold = ?"]
+        params = [len(animals), len(people), max_conf, model_name, now, thr]
         best = next((d for d in animals if d["species_aiy"]), None)
         if best and sid_status != "confirmed":
             sets += ["species_aiy = ?", "confidence_aiy = ?", "common_name = ?"]
@@ -202,7 +202,13 @@ def recompute_summary(cur, sighting_id, thr, common_names):
     """Re-derive a sighting's summary columns from its detections, leaving
     out boxes a human excluded (a swinging watering can the detector calls
     a person, a leaf it calls an animal). Used after a box is excluded or
-    re-included, and after Species Queue posts names."""
+    re-included, and after Species Queue posts names.
+
+    Uses the threshold the photo was SCANNED at (sightings.count_threshold,
+    2026-10-26); `thr` is only the fallback for a photo with none recorded."""
+    own = cur.execute("SELECT count_threshold FROM sightings WHERE id = ?", (sighting_id,)).fetchone()
+    if own and own[0] is not None:
+        thr = own[0]
     rows = cur.execute(
         "SELECT category, det_conf, species_aiy, confidence_aiy, COALESCE(species_confirmed, '') "
         "FROM detections WHERE sighting_id = ? ORDER BY det_conf DESC", (sighting_id,)).fetchall()

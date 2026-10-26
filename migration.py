@@ -238,6 +238,24 @@ def migrate_v6_to_v7(db_path):
     conn.close()
 
 
+def migrate_v7_to_v8(db_path):
+    """2026-10-26: sightings.count_threshold - the detector confidence at
+    which a box counted as a bird WHEN THIS PHOTO WAS SCANNED. Lets the
+    threshold change for new scans (0.2 -> 0.5) without changing the boxes
+    and bird counts of photos already scanned. Every photo already scanned
+    was scanned at 0.2; photos not scanned yet get the current setting when
+    the detector reaches them (detector.save_results). A Resend re-scans at
+    the current setting."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(sightings)")
+    if "count_threshold" not in {row[1] for row in cursor.fetchall()}:
+        cursor.execute("ALTER TABLE sightings ADD COLUMN count_threshold REAL")
+        cursor.execute("UPDATE sightings SET count_threshold = 0.2 WHERE detect_status IN ('done', 'failed')")
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else "/app/data/birds.db"
@@ -247,4 +265,5 @@ if __name__ == "__main__":
     migrate_v4_to_v5(path)
     migrate_v5_to_v6(path)
     migrate_v6_to_v7(path)
+    migrate_v7_to_v8(path)
     print(f"Migration complete: {path}")

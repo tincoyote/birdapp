@@ -5,11 +5,11 @@
   "motion_roi_reference_only": [400, 600, 1600, 825],
   "_motion_roi_note": "Firmware ciao+b16d546 (2026-10-04) watches motion on the 768x432 substream, so the camera's prudynt.json now holds this box scaled x0.4: roi 160,240 -> 640,330. Firmware ignores the left edge (timestamp burn-in exclusion bug) and actually watches x 8-639. Sensitivity 4, cooldown 30 s (as read on the camera 2026-10-22).",
   "detector": {
-    "_comment": "MegaDetector worker (detector.py; DEFAULTS there explain each value). count_threshold: a detection at or above this counts as a bird and gets its own AIY name. Raise torch_threads to speed up, lower to leave the NAS more headroom. skip_categories: detector classes never boxed (vehicle = parked cars on the street).",
+    "_comment": "MegaDetector worker (detector.py; DEFAULTS there explain each value). count_threshold: a detection at or above this counts as a bird and gets its own AIY name (0.2 until 2026-10-26; each photo keeps the value it was scanned at, so changing it affects new scans and Resends only). Raise torch_threads to speed up, lower to leave the NAS more headroom. skip_categories: detector classes never boxed (vehicle = parked cars on the street).",
     "enabled": true,
     "model_path": "/app/models/md_v5a.0.1.pt",
     "model_name": "MDv5a.0.1",
-    "count_threshold": 0.2,
+    "count_threshold": 0.5,
     "store_threshold": 0.1,
     "skip_categories": ["vehicle"],
     "crop_margin": 0.15,

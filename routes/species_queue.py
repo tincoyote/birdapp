@@ -616,7 +616,7 @@ async def species_queue_page():
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id, filename, timestamp, species_aiy, confidence_aiy, common_name, "
-        "species_id_status, detect_status, animal_count, person_count, max_det_conf "
+        "species_id_status, detect_status, animal_count, person_count, max_det_conf, count_threshold "
         "FROM sightings WHERE species_id_status IN ('queued', 'classified') "
         "AND review_status = 'pending_review' "
         "ORDER BY timestamp DESC LIMIT ?", (QUEUE_LIMIT,)

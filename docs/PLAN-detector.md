@@ -89,6 +89,12 @@ capacity, the next one reads this, checks the status list, and continues.
 - Vehicles: detector.skip_categories (default ["vehicle"]) - not stored,
   old rows hidden in main._attach_detections.
 
+## 2026-10-26: count_threshold 0.2 -> 0.5, new scans only
+- sightings.count_threshold (migration v8) = threshold the photo was
+  scanned at; existing scanned photos set to 0.2. Every place that decides
+  "counted / listed" uses COALESCE(sightings.count_threshold, config).
+  Resend re-scans at the current value.
+
 ## Known follow-ups (not done)
 - Species dropdown can list one species twice: once as a bare Latin value
   (unconfirmed AIY guess) and once as a confirmed "Common (Latin)" string.

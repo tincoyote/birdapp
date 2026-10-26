@@ -210,7 +210,8 @@ async def exclude_detection(detection_id: int, body: dict):
         detector.recompute_summary(cur, sid, DETECTOR_CONFIG["count_threshold"], common_names)
         conn.commit()
         s = dict(cur.execute("SELECT id, animal_count, person_count, max_det_conf, species_aiy, "
-                             "confidence_aiy, common_name, detect_status FROM sightings WHERE id = ?",
+                             "confidence_aiy, common_name, detect_status, count_threshold "
+                             "FROM sightings WHERE id = ?",
                              (sid,)).fetchone())
         _attach_detections(cur, [s])
         return s

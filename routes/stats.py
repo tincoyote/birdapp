@@ -97,6 +97,8 @@ async def stats_page():
     else:
         status = "Not running" + (f" - {st['error']}" if st.get("error") else " (starting up)")
     avg = f"{st['avg_seconds']:.1f} s" if st.get("avg_seconds") else "-"
+    older = one(f"SELECT COUNT(*) FROM sightings WHERE count_threshold IS NOT NULL "
+                f"AND count_threshold != {float(DETECTOR_CONFIG['count_threshold'])!r}")
     backlog = f"about {waiting * st['avg_seconds'] / 60:.0f} min" if st.get("avg_seconds") and waiting else "-"
     detector_html = (
         '<table>'
@@ -108,7 +110,9 @@ async def stats_page():
         f'<tr><td>Scans that failed</td><td>{failed}'
         + (f' &middot; latest: {_e(st["error"])}' if st.get("error") and st["loaded"] else '') + '</td></tr>'
         f'<tr><td>Photos with 2+ birds</td><td><a href="/gallery">{multi}</a></td></tr>'
-        f'<tr><td>Counts as a bird at</td><td>{round(DETECTOR_CONFIG["count_threshold"] * 100)}% detector confidence</td></tr>'
+        f'<tr><td>Counts as a bird at</td><td>{round(DETECTOR_CONFIG["count_threshold"] * 100)}% detector confidence'
+        + (f' (new scans; {older} older photo{"s" if older != 1 else ""} keep the threshold they were scanned at)' if older else '')
+        + '</td></tr>'
         '</table>')
 
     # --- Gallery by species (2026-10-20): a photo counts once under EVERY
@@ -120,7 +124,8 @@ async def stats_page():
     birds = {}
     for sid, sp in c.execute("""SELECT d.sighting_id, COALESCE(d.species_confirmed, d.species_aiy)
                                 FROM detections d JOIN sightings s ON s.id = d.sighting_id
-                                WHERE s.review_status='approved' AND d.category='animal' AND d.det_conf >= ?
+                                WHERE s.review_status='approved' AND d.category='animal'
+                                  AND d.det_conf >= COALESCE(s.count_threshold, ?)
                                   AND COALESCE(d.species_confirmed, '') != '__ignore__'""", (thr,)).fetchall():
         if sp and sp != "background":
             birds.setdefault(sid, []).append(sp)
