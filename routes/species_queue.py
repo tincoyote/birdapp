@@ -80,6 +80,12 @@ PAGE = r"""
         .nm-opt.hi { background: #007bff; color: white; }
         .nm-none { padding: 6px 8px; color: #888; font-style: italic; }
         .aiy-conf { font-size: 11px; color: #ccc; min-width: 70px; }
+        .lb-actions { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(720px, 92vw);
+                      display: flex; gap: 8px; z-index: 1001; }
+        .lb-actions button { padding: 10px; font-size: 14px; }
+        .lb-actions .btn-success { flex: 3; }
+        .lb-actions .btn-secondary, .lb-actions .btn-danger { flex: 1; }
+        .lightbox { padding-bottom: 90px; }
         .post-row { display: flex; gap: 8px; margin: 12px 0; }
         .post-row button { flex: 1; padding: 10px; font-size: 14px; }
         .waiting { font-size: 13px; color: #ccc; font-style: italic; padding: 6px 0; margin-bottom: 8px; text-align: center; }
@@ -157,6 +163,7 @@ PAGE = r"""
         <button class="lb-nav lb-next" onclick="navLightbox(1)">&#8594;</button>
         <div class="bx-wrap"><img id="lbImg"></div>
         <div class="lb-panel" id="lbPanel"></div>
+        <div class="lb-actions" id="lbActions"></div>
     </div>
 
     <script>
@@ -365,7 +372,13 @@ PAGE = r"""
 
         // Species Queue shows AIY's SPECIES % on the boxes; clicking a box
         // excludes it (or includes it again) - saved immediately.
-        const boxOpts = { pct: 'aiy', onClick: d => toggleExclude(d.id) };
+        const boxOpts = { pct: 'aiy', onClick: d => toggleExclude(d.id),
+            nameOf: d => { const r = view[lightboxIndex]; return r && drafts[r.id] && drafts[r.id][d.id] ? drafts[r.id][d.id].name : d.species_confirmed; } };
+        // AIY's % only means something while the bird still has AIY's name.
+        function aiyConfText(d, name) {
+            if (renamedFromAiy(d, name)) return '';
+            return d.confidence_aiy != null ? `AIY ${pctText(d.confidence_aiy)}` : 'AIY -';
+        }
 
         function renderLightbox() {
             if (lightboxIndex < 0 || lightboxIndex >= view.length) { closeLightbox(); return; }
@@ -393,11 +406,10 @@ PAGE = r"""
                     return;
                 }
                 const dr = draft[d.id];
-                const conf = d.confidence_aiy != null ? `AIY ${pctText(d.confidence_aiy)}` : 'AIY -';
                 panel += `<div class="bird-row">
                     <span class="bird-num" style="${d.excluded ? 'background:#888' : ''}">${i + 1}</span>
                     ${nameBox(r.id, d.id, dr.name, 'Name this bird...', d.excluded)}
-                    <span class="aiy-conf">${conf}</span>
+                    <span class="aiy-conf" id="conf-${d.id}">${aiyConfText(d, dr.name)}</span>
                     ${d.excluded ? '' : quickButtons(r.id, d.id)}
                     ${exBtn}
                 </div>`;
@@ -409,12 +421,13 @@ PAGE = r"""
                     ${quickButtons(r.id, 'photo')}
                 </div>`;
             }
-            panel += `<div class="post-row"><button class="btn-success" onclick="postCurrent()">Post to Gallery (Enter, or Ctrl+Enter while typing)</button></div>
-                <div class="del-row">
-                    <button class="btn-secondary" onclick="resendToClassifier(${r.id})">Resend to Classifier</button>
-                    <button class="btn-danger" onclick="deleteItem(${r.id})">Delete</button>
-                </div>`;
             document.getElementById('lbPanel').innerHTML = panel;
+            // Fixed to the bottom of the screen (2026-10-28) so the buttons
+            // don't jump when the next photo has a different number of birds.
+            document.getElementById('lbActions').innerHTML =
+                `<button class="btn-success" onclick="postCurrent()">Post to Gallery (Enter, or Ctrl+Enter while typing)</button>
+                 <button class="btn-secondary" onclick="resendToClassifier(${r.id})">Resend to Classifier</button>
+                 <button class="btn-danger" onclick="deleteItem(${r.id})">Delete</button>`;
         }
 
         // ---------- name picker ----------
@@ -434,7 +447,14 @@ PAGE = r"""
         function nmSave(input) {
             const sid = +input.dataset.sid, did = input.dataset.did;
             if (did === 'photo') drafts[sid].photo.name = input.value;
-            else drafts[sid][did].name = input.value;
+            else {
+                drafts[sid][did].name = input.value;
+                // Drop / restore AIY's % as the name moves away from / back to its guess
+                const r = view[lightboxIndex], d = r && (r.detections || []).find(x => String(x.id) === did);
+                const span = document.getElementById('conf-' + did);
+                if (d && span) span.textContent = aiyConfText(d, input.value);
+                if (r) drawBoxes(document.getElementById('lbImg'), r, boxOpts);
+            }
         }
         function nmMatches(q) {
             const words = q.toLowerCase().split(/\s+/).filter(Boolean);

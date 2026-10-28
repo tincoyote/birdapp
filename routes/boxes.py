@@ -37,6 +37,19 @@ function birdName(d) {
     if (d.common_name) return d.common_name;
     return d.species_aiy || 'unknown';
 }
+// AIY's own name for a bird, in the "Common (Latin)" form names are stored in.
+function aiyName(d) {
+    if (d.common_name && d.species_aiy && d.common_name !== d.species_aiy) return `${d.common_name} (${d.species_aiy})`;
+    return d.common_name || d.species_aiy || '';
+}
+// True when the bird carries a name other than AIY's guess (typed or picked
+// by a human) - AIY's confidence then says nothing about that name, so it
+// isn't shown (2026-10-28).
+function renamedFromAiy(d, name) {
+    const n = (name || '').trim().toLowerCase();
+    if (!n) return false;
+    return ![aiyName(d), d.species_aiy, d.common_name].some(v => v && v.toLowerCase() === n);
+}
 function countedBirds(s) { return (s.detections || []).filter(d => d.counted); }
 function listedBoxes(s) { return (s.detections || []).filter(d => d.listed); }
 function boxNumber(s, d) { return listedBoxes(s).indexOf(d) + 1; }
@@ -80,7 +93,11 @@ function drawBoxes(img, s, opts) {
             tag.className = 'bx-tag';
             const n = listed.indexOf(d) + 1;
             const kind = d.category === 'animal' ? '' : ' ' + d.category;
-            const pct = (opts.pct === 'aiy' && d.category === 'animal') ? pctText(d.confidence_aiy) : pctText(d.det_conf);
+            // opts.nameOf(d): the name currently shown for the bird (Species
+            // Queue passes the unsaved draft); default = the saved name.
+            const shown = opts.nameOf ? opts.nameOf(d) : d.species_confirmed;
+            const pct = (opts.pct === 'aiy' && d.category === 'animal')
+                ? (renamedFromAiy(d, shown) ? '' : pctText(d.confidence_aiy)) : pctText(d.det_conf);
             tag.textContent = d.excluded ? `${n} excluded` : `${n}${kind} ${pct}`;
             el.appendChild(tag);
             el.title = d.excluded ? 'Excluded - click to include again'
