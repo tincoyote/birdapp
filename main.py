@@ -527,6 +527,8 @@ def _sightings_where(q: dict):
       detect_status               - pending / done / failed.
       has_person                  - true: only photos with a person in them.
       no_person                   - true: only photos without one.
+      kept                        - 'hide': leave out photos marked Keep;
+                                    'only': just those.
       sp_conf_min / sp_conf_max   - species confidence (least sure bird), 0-1.
     """
     if q.get("review_status"):
@@ -565,6 +567,11 @@ def _sightings_where(q: dict):
         parts.append("COALESCE(person_count, 0) > 0")
     if q.get("no_person") in (True, "true", "1", 1):
         parts.append("COALESCE(person_count, 0) = 0")
+    # Keep mark (2026-10-27, stored in the long-unused is_favorite column)
+    if q.get("kept") == "hide":
+        parts.append("COALESCE(is_favorite, 0) = 0")
+    elif q.get("kept") == "only":
+        parts.append("COALESCE(is_favorite, 0) = 1")
     smin, smax = q.get("sp_conf_min"), q.get("sp_conf_max")
     if (smin is not None and float(smin) > 0) or (smax is not None and float(smax) < 1):
         sql, sp = _species_conf_sql(q.get("species"))
@@ -621,6 +628,7 @@ async def list_sightings(
     detect_status: str = Query(None),
     has_person: bool = Query(False),
     no_person: bool = Query(False),
+    kept: str = Query(None),
     sp_conf_min: float = Query(None, ge=0, le=1),
     sp_conf_max: float = Query(None, ge=0, le=1),
     sort_by: str = Query("timestamp"),
@@ -636,7 +644,7 @@ async def list_sightings(
              species_id_status=species_id_status, review_status=review_status,
              is_trashed=is_trashed, det_conf_min=det_conf_min, det_conf_max=det_conf_max,
              animal_min=animal_min, animal_max=animal_max, detect_status=detect_status,
-             has_person=has_person, no_person=no_person,
+             has_person=has_person, no_person=no_person, kept=kept,
              sp_conf_min=sp_conf_min, sp_conf_max=sp_conf_max)
     where_clause, params = _sightings_where(q)
 
@@ -646,7 +654,9 @@ async def list_sightings(
     cursor.execute(f"SELECT COUNT(*) FROM sightings WHERE {where_clause}", params)
     total = cursor.fetchone()[0]
 
-    # Whitelisted - these get string-interpolated into the query.
+    # Whitelisted - these get string-interpolated into the query. (Until
+    # 2026-10-27 every sort put is_favorite first; it was never set, and now
+    # that it's the Keep mark, kept photos shouldn't jump the chosen sort.)
     sp_sql, sp_params = _species_conf_sql(species)
     order_params = sp_params if sort_by in ("sp_conf", "sp_conf_asc") else []
     order = {
@@ -661,7 +671,7 @@ async def list_sightings(
     offset = (page - 1) * limit
     cursor.execute(
         f"""SELECT * FROM sightings WHERE {where_clause}
-           ORDER BY is_favorite DESC, {order}
+           ORDER BY {order}
            LIMIT ? OFFSET ?""",
         params + order_params + [limit, offset]
     )

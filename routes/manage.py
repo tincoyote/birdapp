@@ -84,6 +84,13 @@ PAGE = r"""
                     <option value="0">None found</option>
                 </select>
             </div>
+            <div class="filter-group"><label>Kept</label>
+                <select id="kept" onchange="applyFilters()">
+                    <option value="hide">Hide kept</option>
+                    <option value="">Show all</option>
+                    <option value="only">Kept only</option>
+                </select>
+            </div>
             <div class="filter-group"><label>Person</label>
                 <select id="person" onchange="applyFilters()">
                     <option value="">Any</option>
@@ -127,6 +134,7 @@ PAGE = r"""
         <div class="controls">
             <button class="btn-primary" onclick="requeueSelected()" id="btnAccept" disabled>Send selected back to Species Queue</button>
             <button class="btn-danger" onclick="deleteSelected()" id="btnDel" disabled>Reject selected to Trash</button>
+            <button class="btn-success" onclick="keepSelected()" id="btnKeep" disabled>Keep selected</button>
             <span style="flex:1"></span>
             <button class="btn-outline-success" onclick="bulk('queue')" id="btnAllQueue" disabled>Send all matching back to Species Queue</button>
             <button class="btn-outline-danger" onclick="bulk('reject')" id="btnAllReject" disabled>Reject all matching</button>
@@ -173,6 +181,7 @@ PAGE = r"""
         <div class="controls" style="margin-top:14px;">
             <button class="btn-primary" onclick="previewAction('approve')">Back to Species Queue (a)</button>
             <button class="btn-danger" onclick="previewAction('reject')">Reject to Trash (r)</button>
+            <button class="btn-success" id="btnPreviewKeep" onclick="previewAction('keep')">Keep (k)</button>
         </div>
     </div>
 
@@ -226,15 +235,18 @@ PAGE = r"""
             if ($('dateFrom').value) f.date_from = $('dateFrom').value;
             if ($('dateTo').value) f.date_to = $('dateTo').value;
             if ($('species').value) f.species = $('species').value;
-            if (a > 0 || b < 100) { f.sp_conf_min = a / 100; f.sp_conf_max = b / 100; }
+            // The top value includes that whole percent: 0-92 means "under 93%".
+            const top = v => v >= 100 ? 1 : (v + 0.999) / 100;
+            if (a > 0 || b < 100) { f.sp_conf_min = a / 100; f.sp_conf_max = top(b); }
             const [c, d] = pair('detMin', 'detMax');
-            if (c > 0 || d < 100) { f.det_conf_min = c / 100; f.det_conf_max = d / 100; }
+            if (c > 0 || d < 100) { f.det_conf_min = c / 100; f.det_conf_max = top(d); }
             const nb = $('birds').value;
             if (nb === '0') f.animal_max = 0;
             if (nb === '1') { f.animal_min = 1; f.animal_max = 1; }
             if (nb === '2') f.animal_min = 2;
             if ($('person').value === 'yes') f.has_person = true;
             if ($('person').value === 'no') f.no_person = true;
+            if ($('kept').value) f.kept = $('kept').value;
             return f;
         }
 
@@ -286,13 +298,13 @@ PAGE = r"""
             }
             tbody.innerHTML = allSightings.map((s, idx) => {
                 const sc = speciesConf(s);
-                const pct = sc == null ? null : Math.round(sc * 100);
+                const pct = sc == null ? null : Math.floor(sc * 100);  // rounded down, so 92.5% sits in 'under 93'
                 const bar = pct === null ? '<small style="color:#999">-</small>'
                     : `${pct}%<div class="bar"><span style="width:${pct}%; background:${pct >= 50 ? '#28a745' : pct >= 20 ? '#ffc107' : '#dc3545'}"></span></div>`;
                 const people = (s.person_count || 0) > 0 ? ' <span class="dbadge" style="background:#ffe0b2;color:#8a4b00">person</span>' : '';
                 return `<tr><td><input type="checkbox" value="${s.id}" onchange="updateSelectedCount()"></td>
                     <td><img src="/images/${s.filename}" class="thumb" loading="lazy" onclick="openPreview(${idx})"></td>
-                    <td>${esc(photoName(s))}<br>${detectorBadge(s)}${people}</td>
+                    <td>${esc(photoName(s))}<br>${detectorBadge(s)}${people}${s.is_favorite ? ' <span class="dbadge" style="background:#cce5ff;color:#004085">kept</span>' : ''}</td>
                     <td>${bar}</td>
                     <td><small>${s.timestamp.replace('T', ' ').slice(0, 16)}</small></td></tr>`;
             }).join('');
@@ -308,7 +320,7 @@ PAGE = r"""
             selectedIds.clear();
             document.querySelectorAll('tbody input[type="checkbox"]:checked').forEach(cb => selectedIds.add(parseInt(cb.value)));
             $('selectedCount').textContent = selectedIds.size ? selectedIds.size + ' selected' : '';
-            ['btnAccept', 'btnDel'].forEach(id => $(id).disabled = selectedIds.size === 0);
+            ['btnAccept', 'btnDel', 'btnKeep'].forEach(id => $(id).disabled = selectedIds.size === 0);
         }
 
         // ---------- lightbox ----------
@@ -326,8 +338,10 @@ PAGE = r"""
             drawBoxes(img, s, boxOpts);
             const sc = speciesConf(s);
             $('previewBirds').innerHTML = esc(photoName(s))
-                + (sc != null ? ` &middot; species confidence ${pctText(sc)}` : '')
+                + (sc != null ? ` &middot; species confidence ${Math.floor(sc * 100)}%` : '')
                 + ((s.person_count || 0) > 0 ? ' &middot; person' : '');
+            $('btnPreviewKeep').textContent = s.is_favorite ? 'Kept - undo (k)' : 'Keep (k)';
+            if (s.is_favorite) $('previewBirds').innerHTML += ' &middot; <span style="color:#7fc1ff">kept</span>';
             $('previewMeta').textContent = `${s.timestamp.replace('T', ' ').slice(0, 16)}  (${previewIndex + 1} of ${allSightings.length} on this page)`;
         }
         // Boxes show AIY's species % (since 2026-10-25, like Gallery); a
@@ -349,7 +363,16 @@ PAGE = r"""
         async function previewAction(action) {
             if (previewIndex < 0) return;
             const s = allSightings[previewIndex];
-            if (action === 'approve') {
+            if (action === 'keep') {
+                // Toggle. When kept photos are hidden, a newly kept one leaves
+                // the list like a reject does; otherwise it just gets the badge.
+                const kept = !s.is_favorite;
+                const res = await fetch(`/api/sightings/${s.id}/keep`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kept}) });
+                if (!res.ok) { showInfo('Could not save that - try again.'); return; }
+                s.is_favorite = kept ? 1 : 0;
+                const leaves = (kept && $('kept').value === 'hide') || (!kept && $('kept').value === 'only');
+                if (!leaves) { renderTable(); renderPreview(); return; }
+            } else if (action === 'approve') {
                 // Back to Species Queue to rename - leaves the Gallery until re-posted
                 const res = await fetch(`/api/sightings/${s.id}/queue-species-id`, { method: 'POST' });
                 if (!res.ok) { showInfo('Could not send it back - try again.'); return; }
@@ -373,11 +396,13 @@ PAGE = r"""
             else if (e.key === 'Escape') exitPreview();
             else if (e.key === 'a') previewAction('approve');
             else if (e.key === 'r') previewAction('reject');
+            else if (e.key === 'k') previewAction('keep');
             else if (e.key === 'b' && previewIndex >= 0) toggleBoxes($('previewImg'), allSightings[previewIndex], boxOpts);
         });
 
         function clearFilters() {
             ['dateFrom', 'dateTo', 'species', 'birds', 'person'].forEach(id => $(id).value = '');
+            $('kept').value = 'hide';
             $('spMin').value = 0; $('spMax').value = 100; $('detMin').value = 0; $('detMax').value = 100;
             $('sortBy').value = 'timestamp';
             syncSp();
@@ -399,6 +424,9 @@ PAGE = r"""
         }
         function requeueSelected() {
             eachSelected('Send back to Species Queue', id => fetch(`/api/sightings/${id}/queue-species-id`, { method: 'POST' }));
+        }
+        function keepSelected() {
+            eachSelected('Keep', id => fetch(`/api/sightings/${id}/keep`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kept: true}) }));
         }
         function deleteSelected() {
             eachSelected('Reject to Trash', id => fetch(`/api/sightings/${id}/review-status`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({review_status: 'rejected'}) }));
@@ -433,11 +461,16 @@ PAGE = r"""
         }
 
         syncSp();
-        // Links from Stats open Manage pre-filtered: ?species=... and/or ?birds=2
+        // Links from Stats open Manage pre-filtered:
+        // ?species=...  ?birds=2  ?sp_min=80&sp_max=89  ?kept=only
         loadSpecies().then(() => {
             const q = new URLSearchParams(location.search);
             if (q.get('species')) $('species').value = q.get('species');
             if (q.get('birds')) $('birds').value = q.get('birds');
+            if (q.get('kept')) $('kept').value = q.get('kept') === 'all' ? '' : q.get('kept');
+            if (q.get('sp_min')) $('spMin').value = q.get('sp_min');
+            if (q.get('sp_max')) $('spMax').value = q.get('sp_max');
+            syncSp();
             return loadSightings();
         });
     </script>

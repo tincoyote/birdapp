@@ -29,6 +29,7 @@ PAGE = """
         th { text-align: left; font-size: 12px; color: #666; border-bottom: 2px solid #dee2e6; padding: 6px 8px; }
         td { border-bottom: 1px solid #eee; padding: 6px 8px; }
         td.num, th.num { text-align: right; }
+        td.muted { color: #bbb; }
         .latin { color: #888; font-style: italic; font-size: 12px; }
         a { color: #007bff; }
         .empty { color: #999; padding: 12px 0; }
@@ -119,18 +120,27 @@ async def stats_page():
     # species in it (same rule as the Gallery filter), and "Birds" counts
     # individuals - a House Finch pair is 1 photo, 2 birds. ---
     thr = DETECTOR_CONFIG["count_threshold"]
-    photos = c.execute("""SELECT id, COALESCE(species_confirmed, species_aiy), timestamp
+    # 2026-10-27: plus each species' confidence spread (90%+, 80-89%,
+    # under 80%) and how many are marked Keep, each linking into Manage
+    # pre-filtered - for picking a per-species cutoff. A photo's confidence
+    # for a species = its least sure bird OF THAT SPECIES, the same rule as
+    # Manage's slider with that species picked (else the photo's AIY score).
+    photos = c.execute("""SELECT id, COALESCE(species_confirmed, species_aiy), timestamp,
+                                 confidence_aiy, COALESCE(is_favorite, 0)
                           FROM sightings WHERE review_status='approved'""").fetchall()
-    birds = {}
-    for sid, sp in c.execute("""SELECT d.sighting_id, COALESCE(d.species_confirmed, d.species_aiy)
+    birds, bird_conf = {}, {}
+    for sid, sp, conf in c.execute("""SELECT d.sighting_id, COALESCE(d.species_confirmed, d.species_aiy), d.confidence_aiy
                                 FROM detections d JOIN sightings s ON s.id = d.sighting_id
                                 WHERE s.review_status='approved' AND d.category='animal'
                                   AND d.det_conf >= COALESCE(s.count_threshold, ?)
                                   AND COALESCE(d.species_confirmed, '') != '__ignore__'""", (thr,)).fetchall():
         if sp and sp != "background":
             birds.setdefault(sid, []).append(sp)
-    agg = {}
-    for sid, photo_sp, ts in photos:
+            if conf is not None:
+                key = (sid, sp)
+                bird_conf[key] = min(conf, bird_conf.get(key, conf))
+    agg, bands, kept = {}, {}, {}
+    for sid, photo_sp, ts, photo_conf, fav in photos:
         per_bird = birds.get(sid, [])
         names = set(per_bird) or ({photo_sp} if photo_sp and photo_sp != "background" else set())
         for sp in names:
@@ -138,6 +148,11 @@ async def stats_page():
             a[0] += 1
             a[1] += per_bird.count(sp) or 1
             a[2], a[3] = min(a[2], ts), max(a[3], ts)
+            conf = bird_conf.get((sid, sp), photo_conf) or 0
+            b = bands.setdefault(sp, [0, 0, 0])
+            b[0 if conf >= 0.9 else 1 if conf >= 0.8 else 2] += 1
+            if fav:
+                kept[sp] = kept.get(sp, 0) + 1
     rows = [(sp, n, b, first, last) for sp, (n, b, first, last) in agg.items()]
     if rows:
         items = []
@@ -151,13 +166,27 @@ async def stats_page():
                 label = f"{common_names[sp]} ({sp})"
             items.append((label, sp, n, nbirds, first[:10], last[:10]))
         items.sort(key=lambda x: (-x[2], x[0].lower()))
+        def band_link(sp, count, lo, hi):
+            if not count:
+                return '<td class="num muted">-</td>'
+            return (f'<td class="num"><a href="/manage?species={quote(sp, safe="")}&sp_min={lo}&sp_max={hi}">'
+                    f'{count}</a></td>')
         body = "".join(
             f'<tr><td><a href="/manage?species={quote(sp, safe="")}">{_e(label)}</a></td>'
-            f'<td class="num">{n}</td><td class="num">{nb}</td><td>{first}</td><td>{last}</td></tr>'
+            f'<td class="num">{n}</td><td class="num">{nb}</td>'
+            + band_link(sp, bands[sp][0], 90, 100) + band_link(sp, bands[sp][1], 80, 89)
+            + band_link(sp, bands[sp][2], 0, 79)
+            + (f'<td class="num"><a href="/manage?species={quote(sp, safe="")}&kept=only">{kept[sp]}</a></td>'
+               if kept.get(sp) else '<td class="num muted">-</td>')
+            + f'<td>{first}</td><td>{last}</td></tr>'
             for label, sp, n, nb, first, last in items
         )
         species_html = (f'<table><tr><th>Species ({len(items)})</th><th class="num">Photos</th>'
-                        f'<th class="num">Birds</th><th>First seen</th><th>Last seen</th></tr>{body}</table>')
+                        f'<th class="num">Birds</th><th class="num">90%+</th><th class="num">80-89%</th>'
+                        f'<th class="num">&lt;80%</th><th class="num">Kept</th>'
+                        f'<th>First seen</th><th>Last seen</th></tr>{body}</table>'
+                        '<div style="font-size:12px;color:#888;margin-top:6px">%: AIY species confidence '
+                        '(least sure bird of that species in the photo). Click a number to open those photos in Manage.</div>')
     else:
         species_html = '<div class="empty">Nothing in the Gallery yet.</div>'
 

@@ -103,6 +103,16 @@ capacity, the next one reads this, checks the status list, and continues.
   only that species' birds count (main._species_conf_sql(species)).
 - Stats species and "2+ birds" links open Manage pre-filtered.
 
+## 2026-10-27 (later): Keep mark + per-species bands
+- Keep = sightings.is_favorite (never used before). POST
+  /api/sightings/{id}/keep; filter kept=hide|only. Manage hides kept by
+  default; k toggles in the preview; "Keep selected". is_favorite no longer
+  forces kept photos to the top of every sort.
+- Stats species table: 90%+ / 80-89% / <80% / Kept counts per species,
+  each linking to Manage pre-filtered (sp_min/sp_max/kept URL params).
+- Manage slider top value includes the whole percent (0-92 = under 93%),
+  and Manage shows percentages rounded down to match.
+
 ## Known follow-ups (not done)
 - Species dropdown can list one species twice: once as a bare Latin value
   (unconfirmed AIY guess) and once as a confirmed "Common (Latin)" string.

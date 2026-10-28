@@ -31,6 +31,26 @@ async def update_review_status(sighting_id: int, body: dict):
     return {"updated": True, "id": sighting_id, "review_status": status}
 
 
+@router.post("/api/sightings/{sighting_id}/keep")
+async def keep_sighting(sighting_id: int, body: dict):
+    """Mark (or unmark) a Gallery photo as a keeper - a bird doing something
+    worth keeping even though its species is common or its confidence is
+    low. Manage hides kept photos by default, so each one is judged once.
+    Stored in sightings.is_favorite (added in schema v2, never used until
+    2026-10-27). Body: {"kept": true|false}"""
+    from main import DB_PATH
+    kept = 1 if body.get("kept", True) else 0
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE sightings SET is_favorite = ? WHERE id = ?", (kept, sighting_id))
+    found = cur.rowcount
+    conn.commit()
+    conn.close()
+    if not found:
+        return {"error": "Sighting not found"}
+    return {"id": sighting_id, "kept": bool(kept)}
+
+
 @router.post("/api/sightings/{sighting_id}/resend-classifier")
 async def resend_classifier(sighting_id: int):
     """Re-scan one sighting and send it to Species Queue, from anywhere
