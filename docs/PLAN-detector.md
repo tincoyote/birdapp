@@ -95,6 +95,14 @@ capacity, the next one reads this, checks the status list, and continues.
   "counted / listed" uses COALESCE(sightings.count_threshold, config).
   Resend re-scans at the current value.
 
+## 2026-10-27: Manage filters match Species Queue
+- Quick-filter buttons replaced by dropdowns: Birds in photo (Any /
+  Exactly 1 / 2 or more / None found), Person (Any / yes / no), plus a Bird
+  confidence slider and sorts.
+- Species confidence follows the Species filter: with a species picked,
+  only that species' birds count (main._species_conf_sql(species)).
+- Stats species and "2+ birds" links open Manage pre-filtered.
+
 ## Known follow-ups (not done)
 - Species dropdown can list one species twice: once as a bare Latin value
   (unconfirmed AIY guess) and once as a confirmed "Common (Latin)" string.

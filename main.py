@@ -491,18 +491,27 @@ _SPECIES_MATCH = """(
 )"""
 
 
-def _species_conf_sql():
-    """SQL for a photo's species confidence = AIY's confidence in its LEAST
-    sure counted bird (same rule as Species Queue's slider, so a confident
-    finch can't hide an unsure jay). No bird box: the photo-level AIY guess.
-    The threshold is a float from camera_config.json, inlined so the
-    expression also works in ORDER BY."""
+def _species_conf_sql(species=None):
+    """SQL (and its params) for a photo's species confidence = AIY's
+    confidence in its LEAST sure counted bird (same rule as Species Queue's
+    slider, so a confident finch can't hide an unsure jay). No bird box:
+    the photo-level AIY guess.
+
+    With `species` (2026-10-27, Manage's species filter): only birds of that
+    species count, so "House Finch under 85%" means the finches, not an
+    unsure jay sharing the photo. Returns (sql, params) - params must be
+    bound wherever the SQL is used, WHERE or ORDER BY."""
     thr = float(DETECTOR_CONFIG["count_threshold"])
+    only = ""
+    params = []
+    if species:
+        only = "AND COALESCE(d.species_confirmed, d.species_aiy) = ? "
+        params = [species]
     return ("COALESCE((SELECT MIN(d.confidence_aiy) FROM detections d "
             "WHERE d.sighting_id = sightings.id AND d.category = 'animal' "
             f"AND d.det_conf >= COALESCE(sightings.count_threshold, {thr!r}) "
             "AND COALESCE(d.species_confirmed, '') != '__ignore__' "
-            "AND d.confidence_aiy IS NOT NULL), confidence_aiy)")
+            f"{only}AND d.confidence_aiy IS NOT NULL), confidence_aiy)"), params
 
 
 def _sightings_where(q: dict):
@@ -517,6 +526,7 @@ def _sightings_where(q: dict):
       animal_min / animal_max     - number of counted birds/animals.
       detect_status               - pending / done / failed.
       has_person                  - true: only photos with a person in them.
+      no_person                   - true: only photos without one.
       sp_conf_min / sp_conf_max   - species confidence (least sure bird), 0-1.
     """
     if q.get("review_status"):
@@ -553,10 +563,13 @@ def _sightings_where(q: dict):
         params.append(int(q["animal_max"]))
     if q.get("has_person") in (True, "true", "1", 1):
         parts.append("COALESCE(person_count, 0) > 0")
+    if q.get("no_person") in (True, "true", "1", 1):
+        parts.append("COALESCE(person_count, 0) = 0")
     smin, smax = q.get("sp_conf_min"), q.get("sp_conf_max")
     if (smin is not None and float(smin) > 0) or (smax is not None and float(smax) < 1):
-        parts.append(f"COALESCE({_species_conf_sql()}, 0) BETWEEN ? AND ?")
-        params += [float(smin or 0), float(1 if smax is None else smax)]
+        sql, sp = _species_conf_sql(q.get("species"))
+        parts.append(f"COALESCE({sql}, 0) BETWEEN ? AND ?")
+        params += sp + [float(smin or 0), float(1 if smax is None else smax)]
     return " AND ".join(parts), params
 
 
@@ -607,6 +620,7 @@ async def list_sightings(
     animal_max: int = Query(None, ge=0),
     detect_status: str = Query(None),
     has_person: bool = Query(False),
+    no_person: bool = Query(False),
     sp_conf_min: float = Query(None, ge=0, le=1),
     sp_conf_max: float = Query(None, ge=0, le=1),
     sort_by: str = Query("timestamp"),
@@ -622,7 +636,8 @@ async def list_sightings(
              species_id_status=species_id_status, review_status=review_status,
              is_trashed=is_trashed, det_conf_min=det_conf_min, det_conf_max=det_conf_max,
              animal_min=animal_min, animal_max=animal_max, detect_status=detect_status,
-             has_person=has_person, sp_conf_min=sp_conf_min, sp_conf_max=sp_conf_max)
+             has_person=has_person, no_person=no_person,
+             sp_conf_min=sp_conf_min, sp_conf_max=sp_conf_max)
     where_clause, params = _sightings_where(q)
 
     conn = sqlite3.connect(DB_PATH)
@@ -632,13 +647,15 @@ async def list_sightings(
     total = cursor.fetchone()[0]
 
     # Whitelisted - these get string-interpolated into the query.
+    sp_sql, sp_params = _species_conf_sql(species)
+    order_params = sp_params if sort_by in ("sp_conf", "sp_conf_asc") else []
     order = {
         "review_updated_at": "review_updated_at DESC",
         "det_conf": "COALESCE(max_det_conf, -1) DESC, timestamp DESC",
         "det_conf_asc": "COALESCE(max_det_conf, 2) ASC, timestamp DESC",
         "oldest": "timestamp ASC",
-        "sp_conf": f"COALESCE({_species_conf_sql()}, -1) DESC, timestamp DESC",
-        "sp_conf_asc": f"COALESCE({_species_conf_sql()}, 2) ASC, timestamp DESC",
+        "sp_conf": f"COALESCE({sp_sql}, -1) DESC, timestamp DESC",
+        "sp_conf_asc": f"COALESCE({sp_sql}, 2) ASC, timestamp DESC",
     }.get(sort_by, "timestamp DESC")
 
     offset = (page - 1) * limit
@@ -646,7 +663,7 @@ async def list_sightings(
         f"""SELECT * FROM sightings WHERE {where_clause}
            ORDER BY is_favorite DESC, {order}
            LIMIT ? OFFSET ?""",
-        params + [limit, offset]
+        params + order_params + [limit, offset]
     )
     items = [dict(r) for r in cursor.fetchall()]
     _attach_detections(cursor, items)

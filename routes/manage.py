@@ -42,8 +42,6 @@ PAGE = r"""
         .btn-outline-success { background: white; color: #28a745; border: 2px solid #28a745; }
         .btn-secondary { background: #6c757d; color: white; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .presets button { padding: 6px 12px; font-size: 13px; background: #e9ecef; color: #333; }
-        .presets button.on { background: #343a40; color: white; }
         .table-wrapper { overflow-x: auto; margin-bottom: 20px; }
         table { width: 100%; border-collapse: collapse; }
         th { background: #f8f9fa; padding: 10px 12px; text-align: left; font-weight: 600; font-size: 13px; border-bottom: 2px solid #dee2e6; }
@@ -72,20 +70,26 @@ PAGE = r"""
         <div class="info" id="info"></div>
         <div class="hint" style="margin:-8px 0 14px; font-size:13px">Clean up posted photos: find likely mis-IDs by species confidence, then reject them or send them back to Species Queue to rename.</div>
 
-        <div class="controls presets" id="presets">
-            <span style="font-size:13px; color:#666;">Quick filter:</span>
-            <button data-p="all" class="on" onclick="preset('all')">All</button>
-            <button data-p="nobird" onclick="preset('nobird')">No bird found</button>
-            <button data-p="bird" onclick="preset('bird')">Has bird(s)</button>
-            <button data-p="multi" onclick="preset('multi')">2+ birds</button>
-            <button data-p="person" onclick="preset('person')">Person in photo</button>
-        </div>
-
         <div class="filters">
             <div class="filter-group"><label>Date From</label><input type="date" id="dateFrom" onchange="applyFilters()"></div>
             <div class="filter-group"><label>Date To</label><input type="date" id="dateTo" onchange="applyFilters()"></div>
             <div class="filter-group"><label>Species</label>
                 <select id="species" onchange="applyFilters()"><option value="">All species</option></select>
+            </div>
+            <div class="filter-group"><label>Birds in photo</label>
+                <select id="birds" onchange="applyFilters()">
+                    <option value="">Any</option>
+                    <option value="1">Exactly 1</option>
+                    <option value="2">2 or more</option>
+                    <option value="0">None found</option>
+                </select>
+            </div>
+            <div class="filter-group"><label>Person</label>
+                <select id="person" onchange="applyFilters()">
+                    <option value="">Any</option>
+                    <option value="yes">Person in photo</option>
+                    <option value="no">No person</option>
+                </select>
             </div>
             <div class="filter-group">
                 <label>Species confidence: <span id="spLabel">0% - 100%</span></label>
@@ -93,7 +97,15 @@ PAGE = r"""
                     <input type="range" id="spMin" min="0" max="100" value="0" oninput="syncSp()" onchange="applyFilters()">
                     <input type="range" id="spMax" min="0" max="100" value="100" oninput="syncSp()" onchange="applyFilters()">
                 </div>
-                <div class="hint">AIY's confidence in the photo's least sure bird. Low = likely mis-ID.</div>
+                <div class="hint">AIY's confidence in the least sure bird - of the chosen species, if one is picked. Low = likely mis-ID.</div>
+            </div>
+            <div class="filter-group">
+                <label>Bird confidence: <span id="detLabel">0% - 100%</span></label>
+                <div class="range-pair">
+                    <input type="range" id="detMin" min="0" max="100" value="0" oninput="syncSp()" onchange="applyFilters()">
+                    <input type="range" id="detMax" min="0" max="100" value="100" oninput="syncSp()" onchange="applyFilters()">
+                </div>
+                <div class="hint">Detector's confidence there's a bird at all.</div>
             </div>
             <div class="filter-group"><label>Sort</label>
                 <select id="sortBy" onchange="applyFilters()">
@@ -101,6 +113,8 @@ PAGE = r"""
                     <option value="oldest">Oldest first</option>
                     <option value="sp_conf_asc">Species confidence, low first</option>
                     <option value="sp_conf">Species confidence, high first</option>
+                    <option value="det_conf_asc">Bird confidence, low first</option>
+                    <option value="det_conf">Bird confidence, high first</option>
                 </select>
             </div>
         </div>
@@ -170,18 +184,25 @@ PAGE = r"""
     <script>
         __BOXES_JS__
         let currentPage = 1, total = 0, allSightings = [], selectedIds = new Set(), previewIndex = -1;
-        let activePreset = 'all';
         const $ = id => document.getElementById(id);
 
-        function spRange() {
-            let a = +$('spMin').value, b = +$('spMax').value;
+        function pair(minId, maxId) {
+            let a = +$(minId).value, b = +$(maxId).value;
             if (a > b) { [a, b] = [b, a]; }
             return [a, b];
         }
-        function syncSp() { const [a, b] = spRange(); $('spLabel').textContent = `${a}% - ${b}%`; }
-        // Same rule as the server's filter and Species Queue: least sure bird.
+        const spRange = () => pair('spMin', 'spMax');
+        function syncSp() {
+            const [a, b] = spRange(), [c, d] = pair('detMin', 'detMax');
+            $('spLabel').textContent = `${a}% - ${b}%`;
+            $('detLabel').textContent = `${c}% - ${d}%`;
+        }
+        // Same rule as the server's filter: the least sure bird - only birds
+        // of the chosen species when one is picked in the Species filter.
         function speciesConf(s) {
-            const c = countedBirds(s).map(d => d.confidence_aiy).filter(v => v != null);
+            const want = $('species').value;
+            const birds = countedBirds(s).filter(d => !want || (d.species_confirmed || d.species_aiy) === want);
+            const c = birds.map(d => d.confidence_aiy).filter(v => v != null);
             return c.length ? Math.min(...c) : s.confidence_aiy;
         }
         function photoName(s) { return birdSummary(s) || s.species_confirmed || s.common_name || s.species_aiy || 'Unknown'; }
@@ -199,13 +220,6 @@ PAGE = r"""
 
         // Presets just set the underlying filters, so what you see in the
         // controls is always exactly what's being filtered.
-        function preset(p) {
-            activePreset = p;
-            document.querySelectorAll('#presets button').forEach(b => b.classList.toggle('on', b.dataset.p === p));
-            syncSp();
-            applyFilters();
-        }
-
         function filterParams() {
             const [a, b] = spRange();
             const f = { review_status: 'approved' };
@@ -213,10 +227,14 @@ PAGE = r"""
             if ($('dateTo').value) f.date_to = $('dateTo').value;
             if ($('species').value) f.species = $('species').value;
             if (a > 0 || b < 100) { f.sp_conf_min = a / 100; f.sp_conf_max = b / 100; }
-            if (activePreset === 'nobird') f.animal_max = 0;
-            if (activePreset === 'bird') f.animal_min = 1;
-            if (activePreset === 'multi') f.animal_min = 2;
-            if (activePreset === 'person') f.has_person = true;
+            const [c, d] = pair('detMin', 'detMax');
+            if (c > 0 || d < 100) { f.det_conf_min = c / 100; f.det_conf_max = d / 100; }
+            const nb = $('birds').value;
+            if (nb === '0') f.animal_max = 0;
+            if (nb === '1') { f.animal_min = 1; f.animal_max = 1; }
+            if (nb === '2') f.animal_min = 2;
+            if ($('person').value === 'yes') f.has_person = true;
+            if ($('person').value === 'no') f.no_person = true;
             return f;
         }
 
@@ -359,10 +377,11 @@ PAGE = r"""
         });
 
         function clearFilters() {
-            $('dateFrom').value = ''; $('dateTo').value = ''; $('species').value = '';
-            $('spMin').value = 0; $('spMax').value = 100;
+            ['dateFrom', 'dateTo', 'species', 'birds', 'person'].forEach(id => $(id).value = '');
+            $('spMin').value = 0; $('spMax').value = 100; $('detMin').value = 0; $('detMax').value = 100;
             $('sortBy').value = 'timestamp';
-            preset('all');
+            syncSp();
+            applyFilters();
         }
 
         // ---------- batch actions ----------
@@ -414,7 +433,13 @@ PAGE = r"""
         }
 
         syncSp();
-        loadSpecies().then(loadSightings);
+        // Links from Stats open Manage pre-filtered: ?species=... and/or ?birds=2
+        loadSpecies().then(() => {
+            const q = new URLSearchParams(location.search);
+            if (q.get('species')) $('species').value = q.get('species');
+            if (q.get('birds')) $('birds').value = q.get('birds');
+            return loadSightings();
+        });
     </script>
 </body>
 </html>

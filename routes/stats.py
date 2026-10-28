@@ -109,7 +109,7 @@ async def stats_page():
         + (f' &middot; last at {_e(st["last_finished"])}' if st.get("last_finished") else '') + '</td></tr>'
         f'<tr><td>Scans that failed</td><td>{failed}'
         + (f' &middot; latest: {_e(st["error"])}' if st.get("error") and st["loaded"] else '') + '</td></tr>'
-        f'<tr><td>Photos with 2+ birds</td><td><a href="/gallery">{multi}</a></td></tr>'
+        f'<tr><td>Photos with 2+ birds</td><td><a href="/manage?birds=2">{multi}</a></td></tr>'
         f'<tr><td>Counts as a bird at</td><td>{round(DETECTOR_CONFIG["count_threshold"] * 100)}% detector confidence'
         + (f' (new scans; {older} older photo{"s" if older != 1 else ""} keep the threshold they were scanned at)' if older else '')
         + '</td></tr>'
@@ -152,7 +152,7 @@ async def stats_page():
             items.append((label, sp, n, nbirds, first[:10], last[:10]))
         items.sort(key=lambda x: (-x[2], x[0].lower()))
         body = "".join(
-            f'<tr><td><a href="/gallery?species={quote(sp, safe="")}">{_e(label)}</a></td>'
+            f'<tr><td><a href="/manage?species={quote(sp, safe="")}">{_e(label)}</a></td>'
             f'<td class="num">{n}</td><td class="num">{nb}</td><td>{first}</td><td>{last}</td></tr>'
             for label, sp, n, nb, first, last in items
         )
